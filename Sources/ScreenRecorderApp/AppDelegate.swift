@@ -5,7 +5,7 @@ import ScreenRecorderCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked Sendable {
     private static let maxHistoryDisplay = "60:00"
     private static let informationalMenuItemHeight: CGFloat = 28
-    private static let informationalMenuItemLeftInset: CGFloat = 22
+    private static let informationalMenuItemLeftInset: CGFloat = 14
     private static let informationalMenuItemRightInset: CGFloat = 16
     private static let informationalMenuItemMinimumWidth: CGFloat = 280
 
@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private var bufferSizeMenuItem: NSMenuItem!
     private var permissionMenuItem: NSMenuItem!
     private var relaunchMenuItem: NSMenuItem!
+    private var recordingRootMenuItem: NSMenuItem!
     private var recordingAdvancedSeparatorItem: NSMenuItem!
     private var profileRootMenuItem: NSMenuItem!
     private var launchAtLoginMenuItem: NSMenuItem!
@@ -102,17 +103,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
         menu.addItem(.separator())
 
+        let recordingMenu = NSMenu()
         for mode in RecordingMode.allCases {
             let item = NSMenuItem(
-                title: mode.menuTitle,
+                title: mode.title,
                 action: #selector(recordingModeMenuItemClicked(_:)),
                 keyEquivalent: ""
             )
             item.target = self
             item.representedObject = mode.rawValue
             recordingModeMenuItems.append(item)
-            menu.addItem(item)
+            recordingMenu.addItem(item)
         }
+
+        recordingRootMenuItem = NSMenuItem(title: "Recording", action: nil, keyEquivalent: "")
+        recordingRootMenuItem.submenu = recordingMenu
+        menu.addItem(recordingRootMenuItem)
 
         recordingAdvancedSeparatorItem = .separator()
         menu.addItem(recordingAdvancedSeparatorItem)
@@ -258,8 +264,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             item.state = rawValue == recordingMode.rawValue ? .on : .off
             item.isEnabled = currentState.canToggleRecording
         }
+        recordingRootMenuItem?.title = "Recording: \(recordingMode.title)"
+        recordingRootMenuItem?.isEnabled = currentState.canToggleRecording
         launchAtLoginMenuItem?.title = LaunchAtLoginController.statusTitle
-        launchAtLoginMenuItem?.state = LaunchAtLoginController.isEnabled ? .on : .off
+        launchAtLoginMenuItem?.state = .off
         profileRootMenuItem?.title = "Profile: \(recorder?.currentProfile.title ?? RecordingProfile.defaultProfile.title)"
         updateAdvancedMenuItems(optionPressed: isStatusMenuOpen && isAdvancedMenuVisible)
         profileMenuItems.forEach { item in

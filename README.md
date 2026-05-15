@@ -36,9 +36,7 @@ tccutil reset ScreenCapture local.screen-recorder
 
 Menu actions:
 
-- `Record Main Display`: record only the main display.
-- `Record All Displays`: record each connected display into its own rolling buffer.
-- `Recording Off`: stop recording while keeping existing buffers available for saving.
+- `Recording`: choose `Main Display`, `All Displays`, or `Off`; the current mode is shown in the menu item title.
 - `Save Last` > `1 Minute` or `3/5/15/30/45/60 Minutes`: export a clip from the rolling buffer. In `All Displays` mode, the app creates a timestamped folder with one `.mov` per display, and each display is exported up to its own available history.
 - Hold `Option`/`Alt` while the menu is open to show `Available History`, `Buffer Size`, the current `Profile`, `Launch at Login`, `Open Buffer Folder`, and `Save and Trim Last`.
 
