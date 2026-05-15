@@ -1,2 +1,7 @@
 .build/
+.swiftpm/
 .DS_Store
+.idea/
+dist/
+DerivedData/
+xcuserdata/

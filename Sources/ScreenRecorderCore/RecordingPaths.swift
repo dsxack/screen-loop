@@ -7,11 +7,11 @@ public struct RecordingPaths {
     public init(
         bufferDirectory: URL = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ScreenRecorder", isDirectory: true)
+            .appendingPathComponent("Screen Loop", isDirectory: true)
             .appendingPathComponent("Buffer", isDirectory: true),
         recordingsDirectory: URL = FileManager.default
             .urls(for: .moviesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Screen Recorder", isDirectory: true)
+            .appendingPathComponent("Screen Loop", isDirectory: true)
     ) {
         self.bufferDirectory = bufferDirectory
         self.recordingsDirectory = recordingsDirectory

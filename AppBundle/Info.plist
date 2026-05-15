@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Screen Recorder</string>
+    <string>Screen Loop</string>
     <key>CFBundleExecutable</key>
     <string>ScreenRecorderApp</string>
     <key>CFBundleIdentifier</key>
-    <string>local.screen-recorder</string>
+    <string>com.dsxack.screen-loop</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Screen Recorder</string>
+    <string>Screen Loop</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

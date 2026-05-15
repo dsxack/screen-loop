@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-release}"
-APP_NAME="Screen Recorder"
+APP_NAME="Screen Loop"
 APP_BUNDLE="$ROOT_DIR/.build/app/$APP_NAME.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -11,8 +11,15 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$ROOT_DIR/.build/module-cache}"
 
-swift build -c "$CONFIGURATION" --product ScreenRecorderApp
-BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
+BUILD_ARGS=(-c "$CONFIGURATION" --product ScreenRecorderApp)
+if [[ -n "${ARCHS:-}" ]]; then
+    for arch in $ARCHS; do
+        BUILD_ARGS+=(--arch "$arch")
+    done
+fi
+
+swift build "${BUILD_ARGS[@]}"
+BIN_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 EXECUTABLE="$BIN_DIR/ScreenRecorderApp"
 
 rm -rf "$APP_BUNDLE"
@@ -24,7 +31,7 @@ if command -v codesign >/dev/null 2>&1; then
     codesign \
         --force \
         --sign - \
-        --requirements '=designated => identifier "local.screen-recorder"' \
+        --requirements '=designated => identifier "com.dsxack.screen-loop"' \
         "$APP_BUNDLE" >/dev/null 2>&1 || true
 fi
 

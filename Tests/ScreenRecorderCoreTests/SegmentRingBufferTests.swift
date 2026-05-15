@@ -220,6 +220,14 @@ struct SegmentRingBufferTests {
     }
 
     @Test
+    func testDefaultRecordingPathsUsePublicProductName() {
+        let paths = RecordingPaths()
+
+        #expect(paths.bufferDirectory.path.hasSuffix("Application Support/Screen Loop/Buffer"))
+        #expect(paths.recordingsDirectory.path.hasSuffix("Movies/Screen Loop"))
+    }
+
+    @Test
     func testExporterTrimsAndConcatenatesSegments() async throws {
         let directory = try makeTemporaryDirectory()
         let firstURL = directory.appendingPathComponent("first.mov")

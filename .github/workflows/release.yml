@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+      - name: Package
+        run: make package REQUIRE_UNIVERSAL_PACKAGE=1 PACKAGE_ARCHS="arm64 x86_64"
+
+      - name: Read release metadata
+        id: meta
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" AppBundle/Info.plist)"
+          archive="$(find dist -maxdepth 1 -name "ScreenLoop-${version}-*.zip" -print -quit)"
+          if [ -z "$archive" ]; then
+            echo "Missing release archive for version $version" >&2
+            exit 1
+          fi
+          sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "archive_name=$(basename "$archive")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "${{ steps.meta.outputs.archive }}" \
+            "${{ steps.meta.outputs.archive }}.sha256" \
+            --generate-notes
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.GORELEASER_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          SHA256: ${{ steps.meta.outputs.sha256 }}
+          ARCHIVE_NAME: ${{ steps.meta.outputs.archive_name }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "Missing GORELEASER_TOKEN secret" >&2
+            exit 1
+          fi
+
+          tap_dir="$RUNNER_TEMP/homebrew-tap"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/dsxack/homebrew-tap.git" "$tap_dir"
+          scripts/update-homebrew-cask.sh "$tap_dir" "$VERSION" "$SHA256" "$ARCHIVE_NAME"
+
+          cd "$tap_dir"
+          git config user.name "Dmitriy Smotrov"
+          git config user.email "dsxack@gmail.com"
+          git add Casks/screen-loop.rb
+          if git diff --cached --quiet; then
+            echo "Homebrew cask is already up to date."
+          else
+            git commit -m "Brew cask update for screen-loop version v${VERSION}"
+            git push origin main
+          fi

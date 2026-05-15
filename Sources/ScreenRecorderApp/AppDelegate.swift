@@ -69,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private func setupMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = currentState.statusItemTitle
-        statusItem.button?.toolTip = "Screen Recorder"
+        statusItem.button?.toolTip = "Screen Loop"
 
         let menu = NSMenu()
 
@@ -94,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         menu.addItem(permissionMenuItem)
 
         relaunchMenuItem = NSMenuItem(
-            title: "Relaunch Screen Recorder",
+            title: "Relaunch Screen Loop",
             action: #selector(relaunchApp),
             keyEquivalent: ""
         )
