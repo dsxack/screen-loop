@@ -4,6 +4,8 @@ Screen Loop is a native macOS menu bar recorder that keeps a rolling 60-minute r
 
 The default recording profile is `Readable Text` (`1080p-ish`, `15fps`). The main menu chooses between `Record Main Display`, `Record All Displays`, and `Recording Off`; the choice persists across app restarts. Advanced items are available by holding `Option`/`Alt` while the menu is open.
 
+![Screen Loop demo](docs/screen-loop-demo.gif)
+
 ## Install
 
 With Homebrew:

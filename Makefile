@@ -42,13 +42,15 @@ PACKAGE_ARCHIVE_LABEL := $(if $(findstring $(space),$(PACKAGE_ACTIVE_ARCHS)),mac
 BUILD_PRODUCT := .build/$(CONFIGURATION)/ScreenRecorderApp
 PACKAGE_ZIP := dist/ScreenLoop-$(VERSION)-$(PACKAGE_ARCHIVE_LABEL).zip
 PACKAGE_SHA256 := $(PACKAGE_ZIP).sha256
+README_DEMO_GIF := docs/screen-loop-demo.gif
+DEMO_FRAME_DIR ?=
 
 BUILD_INPUTS := Package.swift $(SOURCE_FILES)
 TEST_INPUTS := Package.swift $(SOURCE_FILES) $(TEST_FILES)
 APP_INPUTS := Package.swift $(INFO_PLIST) scripts/build-app.sh $(SOURCE_FILES)
 PACKAGE_INPUTS := $(APP_INPUTS) scripts/package-release.sh
 
-.PHONY: all help build test app package run clean
+.PHONY: all help build test app package demo-gif run clean
 
 all: build
 
@@ -58,6 +60,7 @@ help:
 	@printf "  test   Run Swift tests\n"
 	@printf "  app    Build macOS app bundle (%s)\n" "$(APP_BUNDLE)"
 	@printf "  package Build release zip in dist/\n"
+	@printf "  demo-gif Generate README demo GIF from the live app (%s)\n" "$(README_DEMO_GIF)"
 	@printf "  run    Build and open app bundle\n"
 	@printf "  clean  Remove SwiftPM build artifacts\n"
 
@@ -84,6 +87,14 @@ $(PACKAGE_ZIP): $(PACKAGE_INPUTS)
 
 $(PACKAGE_SHA256): $(PACKAGE_ZIP)
 	@test -f "$@" || shasum -a 256 "$<" > "$@"
+
+demo-gif: scripts/render-readme-demo.swift
+	@mkdir -p "$(dir $(README_DEMO_GIF))"
+	@if [ -n "$(DEMO_FRAME_DIR)" ]; then \
+		$(SWIFT) "scripts/render-readme-demo.swift" "$(README_DEMO_GIF)" "$(DEMO_FRAME_DIR)"; \
+	else \
+		$(SWIFT) "scripts/render-readme-demo.swift" "$(README_DEMO_GIF)"; \
+	fi
 
 run: app
 	open "$(APP_BUNDLE)"
