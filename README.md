@@ -1,6 +1,6 @@
 # Screen Recorder
 
-Native macOS menu bar recorder that keeps a rolling 60-minute recorded-media buffer and can save the last 3, 5, 15, 30, 45, or 60 minutes.
+Native macOS menu bar recorder that keeps a rolling 60-minute recorded-media buffer and can save the last 1, 3, 5, 15, 30, 45, or 60 minutes.
 
 The default recording profile is `Low Power` (`720p`, `15fps`). The menu includes a `Recording` toggle for pausing/resuming capture; advanced items are available by holding `Option`/`Alt` while the menu is open.
 
@@ -37,8 +37,8 @@ tccutil reset ScreenCapture local.screen-recorder
 Menu actions:
 
 - `Recording`: pause or resume capture.
-- `Save Last` > `3/5/15/30/45/60 Minutes`: export a clip from the rolling buffer.
-- Hold `Option`/`Alt` while the menu is open to show `Available History`, `Profile`, `Launch at Login`, `Open Buffer Folder`, and `Save and Trim Last`.
+- `Save Last` > `1 Minute` or `3/5/15/30/45/60 Minutes`: export a clip from the rolling buffer.
+- Hold `Option`/`Alt` while the menu is open to show `Available History`, `Buffer Size`, `Profile`, `Launch at Login`, `Open Buffer Folder`, and `Save and Trim Last`.
 
 If less history is available than requested, the app saves the available history and names the file with the actual exported duration.
 

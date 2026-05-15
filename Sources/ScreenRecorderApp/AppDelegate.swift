@@ -4,6 +4,11 @@ import ScreenRecorderCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked Sendable {
     private static let maxHistoryDisplay = "60:00"
+    private static let informationalMenuItemHeight: CGFloat = 28
+    private static let informationalMenuItemLeftInset: CGFloat = 22
+    private static let informationalMenuItemRightInset: CGFloat = 16
+    private static let informationalMenuItemMinimumWidth: CGFloat = 280
+
     private static var isOptionPressed: Bool {
         NSEvent.modifierFlags.contains(.option)
     }
@@ -12,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
     private var availableHistoryMenuItem: NSMenuItem!
+    private var bufferSizeMenuItem: NSMenuItem!
     private var permissionMenuItem: NSMenuItem!
     private var relaunchMenuItem: NSMenuItem!
     private var recordingMenuItem: NSMenuItem!
@@ -62,17 +68,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
         let menu = NSMenu()
 
-        statusMenuItem = NSMenuItem(title: currentState.menuStatus, action: nil, keyEquivalent: "")
-        statusMenuItem.isEnabled = false
+        statusMenuItem = Self.makeInformationalMenuItem(title: currentState.menuStatus)
         menu.addItem(statusMenuItem)
 
-        availableHistoryMenuItem = NSMenuItem(
-            title: "Available History: 0:00 / \(Self.maxHistoryDisplay)",
-            action: nil,
-            keyEquivalent: ""
+        availableHistoryMenuItem = Self.makeInformationalMenuItem(
+            title: "Available History: 0:00 / \(Self.maxHistoryDisplay)"
         )
-        availableHistoryMenuItem.isEnabled = false
         menu.addItem(availableHistoryMenuItem)
+
+        bufferSizeMenuItem = Self.makeInformationalMenuItem(title: "Buffer Size: 0 KB")
+        menu.addItem(bufferSizeMenuItem)
 
         permissionMenuItem = NSMenuItem(
             title: "Grant Screen Recording Permission",
@@ -145,9 +150,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         saveAndTrimHeaderItem.keyEquivalentModifierMask = [.option]
         menu.addItem(saveAndTrimHeaderItem)
 
-        for minutes in [3, 5, 15, 30, 45, 60] {
+        for minutes in [1, 3, 5, 15, 30, 45, 60] {
             let item = NSMenuItem(
-                title: "\(minutes) Minutes",
+                title: Self.durationMenuTitle(minutes: minutes),
                 action: #selector(saveMenuItemClicked(_:)),
                 keyEquivalent: ""
             )
@@ -158,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             menu.addItem(item)
 
             let trimItem = NSMenuItem(
-                title: "\(minutes) Minutes",
+                title: Self.durationMenuTitle(minutes: minutes),
                 action: #selector(saveMenuItemClicked(_:)),
                 keyEquivalent: ""
             )
@@ -230,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
     private func updateMenu() {
         statusItem?.button?.title = currentState.statusItemTitle
-        statusMenuItem?.title = currentState.menuStatus
+        Self.setInformationalTitle(currentState.menuStatus, for: statusMenuItem)
         permissionMenuItem?.isHidden = currentState != .permissionRequired
         relaunchMenuItem?.isHidden = currentState != .permissionRequired
         recordingMenuItem?.isEnabled = currentState.canToggleRecording
@@ -249,6 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
     private func updateAdvancedMenuItems(optionPressed: Bool) {
         availableHistoryMenuItem?.isHidden = !optionPressed
+        bufferSizeMenuItem?.isHidden = !optionPressed
         profileRootMenuItem?.isHidden = !optionPressed
         launchAtLoginMenuItem?.isHidden = !optionPressed
         openLoginItemsSettingsMenuItem?.isHidden = !(optionPressed && LaunchAtLoginController.requiresApproval)
@@ -256,6 +262,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         if isStatusMenuOpen {
             statusItem?.menu?.update()
         }
+    }
+
+    private static func durationMenuTitle(minutes: Int) -> String {
+        minutes == 1 ? "1 Minute" : "\(minutes) Minutes"
+    }
+
+    private static func makeInformationalMenuItem(title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.view = makeInformationalMenuItemView(title: title)
+        return item
+    }
+
+    private static func setInformationalTitle(_ title: String, for item: NSMenuItem?) {
+        item?.title = title
+        guard let view = item?.view,
+              let label = view.subviews.first as? NSTextField else {
+            return
+        }
+
+        label.stringValue = title
+        resizeInformationalMenuItemView(view, title: title)
+    }
+
+    private static func makeInformationalMenuItemView(title: String) -> NSView {
+        let view = NSView(frame: .zero)
+        let label = NSTextField(labelWithString: title)
+        label.font = NSFont.menuFont(ofSize: 0)
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.cell?.usesSingleLineMode = true
+        view.addSubview(label)
+        resizeInformationalMenuItemView(view, title: title)
+        return view
+    }
+
+    private static func resizeInformationalMenuItemView(_ view: NSView, title: String) {
+        let font = NSFont.menuFont(ofSize: 0)
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        let width = max(
+            informationalMenuItemMinimumWidth,
+            textWidth + informationalMenuItemLeftInset + informationalMenuItemRightInset
+        )
+
+        view.frame = CGRect(x: 0, y: 0, width: width, height: informationalMenuItemHeight)
+        guard let label = view.subviews.first as? NSTextField else {
+            return
+        }
+
+        label.frame = CGRect(
+            x: informationalMenuItemLeftInset,
+            y: 4,
+            width: width - informationalMenuItemLeftInset - informationalMenuItemRightInset,
+            height: informationalMenuItemHeight - 8
+        )
     }
 
     private func installMenuModifierMonitor() {
@@ -295,12 +356,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
     private func refreshAvailableHistory() {
         guard let recorder else {
-            availableHistoryMenuItem?.title = "Available History: 0:00 / \(Self.maxHistoryDisplay)"
+            Self.setInformationalTitle(
+                "Available History: 0:00 / \(Self.maxHistoryDisplay)",
+                for: availableHistoryMenuItem
+            )
+            Self.setInformationalTitle(
+                "Buffer Size: \(Self.formatByteCount(bufferDirectorySize()))",
+                for: bufferSizeMenuItem
+            )
             return
         }
 
         let duration = recorder.availableMediaDurationSnapshot()
-        availableHistoryMenuItem?.title = "Available History: \(Self.formatDuration(duration)) / \(Self.maxHistoryDisplay)"
+        Self.setInformationalTitle(
+            "Available History: \(Self.formatDuration(duration)) / \(Self.maxHistoryDisplay)",
+            for: availableHistoryMenuItem
+        )
+        Self.setInformationalTitle(
+            "Buffer Size: \(Self.formatByteCount(bufferDirectorySize()))",
+            for: bufferSizeMenuItem
+        )
         statusItem.menu?.update()
     }
 
@@ -427,6 +502,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         NSWorkspace.shared.open(paths.bufferDirectory)
     }
 
+    private func bufferDirectorySize() -> Int64 {
+        let keys: Set<URLResourceKey> = [.fileSizeKey, .isRegularFileKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: paths.bufferDirectory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+
+        var totalSize: Int64 = 0
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true,
+                  let fileSize = values.fileSize else {
+                continue
+            }
+
+            totalSize += Int64(fileSize)
+        }
+
+        return totalSize
+    }
+
     @objc private func quit() {
         permissionRelaunchPending = false
         stopAvailableHistoryTimer()
@@ -491,5 +590,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private static func formatByteCount(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
