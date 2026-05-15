@@ -424,6 +424,7 @@ struct SegmentRingBufferTests {
             }
         }
 
+        writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: CMTimeScale(frameRate)))
         input.markAsFinished()
         let writerBox = AssetWriterBox(writer)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
