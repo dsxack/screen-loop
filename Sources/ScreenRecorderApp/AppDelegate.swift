@@ -178,14 +178,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         saveAndTrimHeaderItem.keyEquivalentModifierMask = [.option]
         menu.addItem(saveAndTrimHeaderItem)
 
-        for minutes in [1, 3, 5, 15, 30, 45, 60] {
+        for (index, minutes) in [1, 3, 5, 15, 30, 45, 60].enumerated() {
+            let shortcut = "\(index + 1)"
             let item = NSMenuItem(
                 title: Self.durationMenuTitle(minutes: minutes),
                 action: #selector(saveMenuItemClicked(_:)),
-                keyEquivalent: ""
+                keyEquivalent: shortcut
             )
             item.target = self
             item.representedObject = minutes
+            item.keyEquivalentModifierMask = [.command]
             item.isEnabled = false
             saveMenuItems.append(item)
             menu.addItem(item)
@@ -193,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             let trimItem = NSMenuItem(
                 title: Self.durationMenuTitle(minutes: minutes),
                 action: #selector(saveMenuItemClicked(_:)),
-                keyEquivalent: ""
+                keyEquivalent: shortcut
             )
             trimItem.target = self
             trimItem.representedObject = minutes
