@@ -26,6 +26,15 @@ public struct RecordingPaths {
         bufferDirectory.appendingPathComponent("segment-\(Self.fileStamp(from: startDate))-\(UUID().uuidString).mov")
     }
 
+    public func bufferDirectory(forDisplayID displayID: UInt32) -> URL {
+        bufferDirectory.appendingPathComponent("display-\(displayID)", isDirectory: true)
+    }
+
+    public func makeSegmentURL(displayID: UInt32, startDate: Date = Date()) -> URL {
+        bufferDirectory(forDisplayID: displayID)
+            .appendingPathComponent("segment-\(Self.fileStamp(from: startDate))-\(UUID().uuidString).mov")
+    }
+
     public static func segmentStartDate(from url: URL) -> Date? {
         let name = url.deletingPathExtension().lastPathComponent
         let prefix = "segment-"
@@ -47,6 +56,24 @@ public struct RecordingPaths {
         recordingsDirectory.appendingPathComponent("Screen Recording \(Self.fileStamp(from: date)) - Last \(Self.durationStamp(duration)).mov")
     }
 
+    public func makeAllDisplaysRecordingDirectory(duration: TimeInterval, date: Date = Date()) -> URL {
+        recordingsDirectory.appendingPathComponent(
+            "Screen Recording \(Self.fileStamp(from: date)) - Last \(Self.durationStamp(duration)) - All Displays",
+            isDirectory: true
+        )
+    }
+
+    public func makeDisplayRecordingURL(
+        in directory: URL,
+        displayName: String,
+        displayIndex: Int,
+        displayID: UInt32
+    ) -> URL {
+        let sanitizedName = Self.sanitizedFileComponent(displayName)
+        let index = String(format: "%02d", displayIndex)
+        return directory.appendingPathComponent("\(index) - \(sanitizedName) - Display \(displayID).mov")
+    }
+
     public static func durationStamp(_ duration: TimeInterval) -> String {
         let totalSeconds = max(1, Int(duration.rounded()))
         let minutes = totalSeconds / 60
@@ -64,6 +91,17 @@ public struct RecordingPaths {
 
     private static func fileStamp(from date: Date) -> String {
         fileStampFormatter().string(from: date)
+    }
+
+    private static func sanitizedFileComponent(_ value: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/:")
+            .union(.newlines)
+            .union(.controlCharacters)
+        let parts = value.components(separatedBy: invalidCharacters)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let sanitized = parts.joined(separator: "-")
+        return sanitized.isEmpty ? "Display" : sanitized
     }
 
     private static func fileStampFormatter() -> DateFormatter {

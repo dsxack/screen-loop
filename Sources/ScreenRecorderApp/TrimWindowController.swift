@@ -3,15 +3,29 @@ import AppKit
 import AVKit
 import ScreenRecorderCore
 
+struct TrimWindowSource: Equatable {
+    let title: String
+    let url: URL
+}
+
 @MainActor
 final class TrimWindowController: NSWindowController, NSWindowDelegate {
-    private let sourceURL: URL
+    private let sources: [TrimWindowSource]
+    private var selectedSourceIndex: Int
+    private var sourceURL: URL {
+        sources[selectedSourceIndex].url
+    }
+    private var sourceTitle: String {
+        sources[selectedSourceIndex].title
+    }
     private let trimmer = VideoTrimmer()
     private let minimumRange: TimeInterval = 0.5
     private let playbackBoundaryTolerance: TimeInterval = 0.05
     private var sourceAsset: AVURLAsset
     private let player = AVPlayer()
     private let playerView = AVPlayerView()
+    private let previewContainer = NSView()
+    private let sourcePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let rangeSlider = RangeSliderControl()
     private let startField = NSTextField(string: "0:00")
     private let endField = NSTextField(string: "0:00")
@@ -26,16 +40,28 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
     private var isUpdatingControls = false
     private var isExporting = false
     private var isSeekingPlayer = false
+    private var loadGeneration = 0
     private var previewGeneration = 0
     private var previewRefreshTask: Task<Void, Never>?
     private var playerRateObservation: NSKeyValueObservation?
     private var playerTimeObserver: Any?
+    private var playerViewWidthConstraint: NSLayoutConstraint?
+    private var playerViewHeightConstraint: NSLayoutConstraint?
+    private var previewContainerHeightConstraint: NSLayoutConstraint?
+    private weak var controlsStack: NSStackView?
+    private weak var sourceStack: NSStackView?
 
     var onClose: (() -> Void)?
 
-    init(sourceURL: URL) {
-        self.sourceURL = sourceURL
-        self.sourceAsset = AVURLAsset(url: sourceURL)
+    convenience init(sourceURL: URL) {
+        self.init(sources: [TrimWindowSource(title: sourceURL.lastPathComponent, url: sourceURL)])
+    }
+
+    init(sources: [TrimWindowSource], selectedIndex: Int = 0) {
+        precondition(!sources.isEmpty, "TrimWindowController requires at least one source.")
+        self.sources = sources
+        self.selectedSourceIndex = min(max(0, selectedIndex), sources.count - 1)
+        self.sourceAsset = AVURLAsset(url: sources[self.selectedSourceIndex].url)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 620),
@@ -44,7 +70,7 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
         window.title = "Trim Clip"
-        window.minSize = NSSize(width: 680, height: 500)
+        window.minSize = NSSize(width: 560, height: 500)
 
         super.init(window: window)
         window.delegate = self
@@ -78,7 +104,18 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
         playerView.player = player
         playerView.controlsStyle = .floating
+        playerView.videoGravity = .resizeAspect
         playerView.translatesAutoresizingMaskIntoConstraints = false
+        previewContainer.translatesAutoresizingMaskIntoConstraints = false
+
+        sourcePopup.target = self
+        sourcePopup.action = #selector(sourcePopupChanged(_:))
+        sourcePopup.translatesAutoresizingMaskIntoConstraints = false
+        for (index, source) in sources.enumerated() {
+            sourcePopup.addItem(withTitle: source.title)
+            sourcePopup.item(at: index)?.representedObject = index
+        }
+        sourcePopup.selectItem(at: selectedSourceIndex)
 
         rangeSlider.target = self
         rangeSlider.action = #selector(rangeSliderChanged(_:))
@@ -105,6 +142,17 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
         statusLabel.lineBreakMode = .byTruncatingMiddle
         statusLabel.textColor = .secondaryLabelColor
+
+        let sourceLabel = NSTextField(labelWithString: "Display")
+        let sourceSpacer = NSView()
+        let sourceStack = NSStackView(views: [sourceLabel, sourcePopup, sourceSpacer])
+        self.sourceStack = sourceStack
+        sourceStack.orientation = .horizontal
+        sourceStack.alignment = .centerY
+        sourceStack.spacing = 8
+        sourceStack.translatesAutoresizingMaskIntoConstraints = false
+        sourceSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        sourcePopup.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         let startLabel = NSTextField(labelWithString: "Start")
         let endLabel = NSTextField(labelWithString: "End")
@@ -145,44 +193,92 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
 
         let controlsStack = NSStackView(views: [rangeStack, statusLabel, buttonStack])
+        self.controlsStack = controlsStack
         controlsStack.orientation = .vertical
         controlsStack.alignment = .leading
         controlsStack.spacing = 14
         controlsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        contentView.addSubview(playerView)
-        contentView.addSubview(controlsStack)
+        let contentStack = NSStackView()
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 16
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        if sources.count > 1 {
+            contentStack.addArrangedSubview(sourceStack)
+        }
+        previewContainer.addSubview(playerView)
+        contentStack.addArrangedSubview(previewContainer)
+        contentStack.addArrangedSubview(controlsStack)
 
-        NSLayoutConstraint.activate([
-            playerView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
-            playerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            playerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            playerView.heightAnchor.constraint(greaterThanOrEqualToConstant: 320),
+        contentView.addSubview(contentStack)
 
-            controlsStack.topAnchor.constraint(equalTo: playerView.bottomAnchor, constant: 16),
-            controlsStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            controlsStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            controlsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+        let playerViewWidthConstraint = playerView.widthAnchor.constraint(equalToConstant: 788)
+        let playerViewHeightConstraint = playerView.heightAnchor.constraint(equalToConstant: 320)
+        let previewContainerHeightConstraint = previewContainer.heightAnchor.constraint(equalToConstant: 320)
+        self.playerViewWidthConstraint = playerViewWidthConstraint
+        self.playerViewHeightConstraint = playerViewHeightConstraint
+        self.previewContainerHeightConstraint = previewContainerHeightConstraint
 
+        var constraints = [
+            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
+            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+
+            previewContainer.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            previewContainerHeightConstraint,
+            playerView.centerXAnchor.constraint(equalTo: previewContainer.centerXAnchor),
+            playerView.centerYAnchor.constraint(equalTo: previewContainer.centerYAnchor),
+            playerViewWidthConstraint,
+            playerViewHeightConstraint,
+
+            controlsStack.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             rangeStack.widthAnchor.constraint(equalTo: controlsStack.widthAnchor),
             rangeHeader.widthAnchor.constraint(equalTo: rangeStack.widthAnchor),
             rangeSlider.widthAnchor.constraint(equalTo: rangeStack.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: controlsStack.widthAnchor),
             buttonStack.widthAnchor.constraint(equalTo: controlsStack.widthAnchor)
-        ])
+        ]
+        if sources.count > 1 {
+            constraints.append(sourceStack.widthAnchor.constraint(equalTo: contentStack.widthAnchor))
+            constraints.append(sourcePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220))
+        }
+        NSLayoutConstraint.activate(constraints)
 
         setControlsEnabled(false)
     }
 
     private func loadClip() {
+        loadGeneration += 1
+        let generation = loadGeneration
+        let asset = sourceAsset
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        previewRefreshTask?.cancel()
+        duration = 0
+        startTime = 0
+        endTime = 0
+        rangeSlider.minimumValue = 0
+        rangeSlider.maximumValue = 0
+        startField.stringValue = "0:00"
+        endField.stringValue = "0:00"
+        setControlsEnabled(false)
+        statusLabel.stringValue = "Loading \(sourceTitle)..."
+
         Task {
             do {
-                let loadedDuration = try await sourceAsset.load(.duration).seconds
+                let loadedDuration = try await asset.load(.duration).seconds
+                let presentationSize = try await Self.presentationSize(for: asset)
+                guard generation == loadGeneration else {
+                    return
+                }
                 guard loadedDuration.isFinite, loadedDuration >= minimumRange else {
                     statusLabel.stringValue = "Clip is too short to trim."
                     return
                 }
 
+                applyWindowLayout(for: presentationSize)
                 duration = loadedDuration
                 startTime = 0
                 endTime = loadedDuration
@@ -192,9 +288,89 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
                 updateControls(seekToSourceTime: .zero)
                 statusLabel.stringValue = "Choose start and end, then save the trimmed clip."
             } catch {
+                guard generation == loadGeneration else {
+                    return
+                }
                 statusLabel.stringValue = "Could not load clip: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func applyWindowLayout(for presentationSize: CGSize) {
+        guard presentationSize.width > 0, presentationSize.height > 0,
+              let window else {
+            return
+        }
+
+        let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let aspectRatio = max(0.1, min(10, presentationSize.width / presentationSize.height))
+        let controlsHeight = max(112, controlsStack?.fittingSize.height ?? 112)
+        let sourceHeight = sources.count > 1 ? max(26, sourceStack?.fittingSize.height ?? 26) : 0
+        let outerMargin: CGFloat = 32
+        let stackSpacing: CGFloat = 16
+        let sourceBlockHeight = sources.count > 1 ? sourceHeight + stackSpacing : 0
+        let controlsBlockHeight = stackSpacing + controlsHeight
+        let minStackWidth: CGFloat = sources.count > 1 ? 520 : 500
+        let maxStackWidth = max(minStackWidth, min(1050, visibleFrame.width - 112))
+        let maxContentHeight = max(500, visibleFrame.height - 120)
+        let maxPreviewHeight = max(260, maxContentHeight - outerMargin - sourceBlockHeight - controlsBlockHeight)
+
+        let previewSize: CGSize
+        let stackWidth: CGFloat
+        if aspectRatio < 1 {
+            var previewHeight = min(maxPreviewHeight, max(560, maxPreviewHeight))
+            var previewWidth = previewHeight * aspectRatio
+            stackWidth = min(maxStackWidth, max(minStackWidth, previewWidth))
+            if previewWidth > stackWidth {
+                previewWidth = stackWidth
+                previewHeight = previewWidth / aspectRatio
+            }
+            previewSize = CGSize(width: previewWidth, height: previewHeight)
+        } else {
+            var previewWidth = min(maxStackWidth, max(788, minStackWidth))
+            var previewHeight = previewWidth / aspectRatio
+            if previewHeight > maxPreviewHeight {
+                previewHeight = maxPreviewHeight
+                previewWidth = previewHeight * aspectRatio
+            }
+            stackWidth = min(maxStackWidth, max(minStackWidth, previewWidth))
+            previewSize = CGSize(width: previewWidth, height: previewHeight)
+        }
+
+        playerViewWidthConstraint?.constant = previewSize.width
+        playerViewHeightConstraint?.constant = previewSize.height
+        previewContainerHeightConstraint?.constant = previewSize.height
+
+        let contentSize = NSSize(
+            width: stackWidth + outerMargin,
+            height: outerMargin + sourceBlockHeight + previewSize.height + controlsBlockHeight
+        )
+        resizeWindow(window, toContentSize: contentSize, within: visibleFrame)
+    }
+
+    private func resizeWindow(_ window: NSWindow, toContentSize contentSize: NSSize, within visibleFrame: NSRect) {
+        let oldFrame = window.frame
+        let center = NSPoint(x: oldFrame.midX, y: oldFrame.midY)
+        window.setContentSize(contentSize)
+
+        var frame = window.frame
+        frame.origin.x = center.x - frame.width / 2
+        frame.origin.y = center.y - frame.height / 2
+
+        if frame.minX < visibleFrame.minX {
+            frame.origin.x = visibleFrame.minX
+        }
+        if frame.maxX > visibleFrame.maxX {
+            frame.origin.x = visibleFrame.maxX - frame.width
+        }
+        if frame.minY < visibleFrame.minY {
+            frame.origin.y = visibleFrame.minY
+        }
+        if frame.maxY > visibleFrame.maxY {
+            frame.origin.y = visibleFrame.maxY - frame.height
+        }
+
+        window.setFrame(frame, display: true, animate: window.isVisible)
     }
 
     private func setControlsEnabled(_ enabled: Bool) {
@@ -204,6 +380,23 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
         endField.isEnabled = enabled
         replaceButton.isEnabled = enabled
         createNewButton.isEnabled = enabled
+        sourcePopup.isEnabled = sources.count > 1 && enabled
+    }
+
+    @objc private func sourcePopupChanged(_ sender: NSPopUpButton) {
+        guard !isExporting else {
+            sender.selectItem(at: selectedSourceIndex)
+            return
+        }
+
+        let selectedIndex = sender.selectedItem?.representedObject as? Int ?? sender.indexOfSelectedItem
+        guard sources.indices.contains(selectedIndex), selectedIndex != selectedSourceIndex else {
+            return
+        }
+
+        selectedSourceIndex = selectedIndex
+        sourceAsset = AVURLAsset(url: sourceURL)
+        loadClip()
     }
 
     @objc private func rangeSliderChanged(_ sender: RangeSliderControl) {
@@ -423,11 +616,12 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
         isExporting = true
         setControlsEnabled(false)
         statusLabel.stringValue = "Trimming..."
+        let trimSourceURL = sourceURL
 
         Task {
             do {
                 let result = try await trimmer.trim(
-                    sourceURL: sourceURL,
+                    sourceURL: trimSourceURL,
                     startTime: startTime,
                     endTime: endTime,
                     mode: mode
@@ -486,5 +680,28 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
         default:
             return nil
         }
+    }
+
+    private static func presentationSize(for asset: AVURLAsset) async throws -> CGSize {
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            return CGSize(width: 16, height: 9)
+        }
+
+        let naturalSize = try await track.load(.naturalSize)
+        let preferredTransform = try await track.load(.preferredTransform)
+        return presentationSize(naturalSize: naturalSize, preferredTransform: preferredTransform)
+    }
+
+    private static func presentationSize(
+        naturalSize: CGSize,
+        preferredTransform: CGAffineTransform
+    ) -> CGSize {
+        let transformed = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
+        let transformedSize = CGSize(width: abs(transformed.width), height: abs(transformed.height))
+        if transformedSize.width > 0, transformedSize.height > 0 {
+            return transformedSize
+        }
+
+        return CGSize(width: abs(naturalSize.width), height: abs(naturalSize.height))
     }
 }

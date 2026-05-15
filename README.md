@@ -1,15 +1,15 @@
 # Screen Recorder
 
-Native macOS menu bar recorder that keeps a rolling 60-minute recorded-media buffer and can save the last 1, 3, 5, 15, 30, 45, or 60 minutes.
+Native macOS menu bar recorder that keeps a rolling 60-minute recorded-media buffer for the main display or all displays and can save the last 1, 3, 5, 15, 30, 45, or 60 minutes.
 
-The default recording profile is `Low Power` (`720p`, `15fps`). The menu includes a `Recording` toggle for pausing/resuming capture; advanced items are available by holding `Option`/`Alt` while the menu is open.
+The default recording profile is `Readable Text` (`1080p-ish`, `15fps`). The main menu chooses between `Record Main Display`, `Record All Displays`, and `Recording Off`; the choice persists across app restarts. Advanced items are available by holding `Option`/`Alt` while the menu is open.
 
 ## Build
 
 ```sh
-env CLANG_MODULE_CACHE_PATH=.build/module-cache swift build
-env CLANG_MODULE_CACHE_PATH=.build/module-cache swift test
-bash scripts/build-app.sh
+make build
+make test
+make app
 ```
 
 The app bundle is created at:
@@ -36,13 +36,15 @@ tccutil reset ScreenCapture local.screen-recorder
 
 Menu actions:
 
-- `Recording`: pause or resume capture.
-- `Save Last` > `1 Minute` or `3/5/15/30/45/60 Minutes`: export a clip from the rolling buffer.
-- Hold `Option`/`Alt` while the menu is open to show `Available History`, `Buffer Size`, `Profile`, `Launch at Login`, `Open Buffer Folder`, and `Save and Trim Last`.
+- `Record Main Display`: record only the main display.
+- `Record All Displays`: record each connected display into its own rolling buffer.
+- `Recording Off`: stop recording while keeping existing buffers available for saving.
+- `Save Last` > `1 Minute` or `3/5/15/30/45/60 Minutes`: export a clip from the rolling buffer. In `All Displays` mode, the app creates a timestamped folder with one `.mov` per display, and each display is exported up to its own available history.
+- Hold `Option`/`Alt` while the menu is open to show `Available History`, `Buffer Size`, the current `Profile`, `Launch at Login`, `Open Buffer Folder`, and `Save and Trim Last`.
 
-If less history is available than requested, the app saves the available history and names the file with the actual exported duration.
+If less history is available than requested, the app saves the available history and names the file or all-display folder with the longest actual exported duration. In `All Displays` mode, the `Option`/`Alt` menu shows one history row per display.
 
-To trim immediately after saving, hold `Option`/`Alt` and choose a duration under `Save and Trim Last`. The `Trim Clip` window opens for the exported file.
+To trim immediately after saving, hold `Option`/`Alt` and choose a duration under `Save and Trim Last`. For all-display recordings, the app saves every display first, then opens the `Trim Clip` window with a display picker. `Replace Original` and `Create New` affect only the selected display file.
 
 The recorder listens for macOS sleep/wake and active-session notifications. If recording was enabled before sleep, capture is restarted automatically after wake.
 
@@ -52,10 +54,10 @@ Saved clips go to:
 ~/Movies/Screen Recorder
 ```
 
-Temporary ring-buffer segments are stored in:
+Temporary ring-buffer segments are stored under:
 
 ```text
 ~/Library/Application Support/ScreenRecorder/Buffer
 ```
 
-On launch, the app recovers finalized buffer segments that still fit inside the last 60 minutes of recorded media. Older, invalid, or unfinished temporary segments are removed.
+On launch, the app recovers finalized per-display buffer segments that still fit inside the last 60 minutes of recorded media. Older, invalid, or unfinished temporary segments are removed.

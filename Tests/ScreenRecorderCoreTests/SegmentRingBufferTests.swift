@@ -96,16 +96,26 @@ struct SegmentRingBufferTests {
     func testVideoGeometryFitsWithin1080p() {
         #expect(VideoGeometry.fitWithin1080p(sourceWidth: 5120, sourceHeight: 2880) == VideoGeometry(width: 1920, height: 1080))
         #expect(VideoGeometry.fitWithin1080p(sourceWidth: 1512, sourceHeight: 982) == VideoGeometry(width: 1512, height: 982))
-        #expect(VideoGeometry.fitWithin(sourceWidth: 1920, sourceHeight: 1080, maxHeight: 720) == VideoGeometry(width: 1280, height: 720))
+        #expect(VideoGeometry.fitWithin(sourceWidth: 1920, sourceHeight: 1080, maxLongEdge: 1920) == VideoGeometry(width: 1920, height: 1080))
+        #expect(VideoGeometry.fitWithin(sourceWidth: 1080, sourceHeight: 1920, maxLongEdge: 1920) == VideoGeometry(width: 1080, height: 1920))
+        #expect(VideoGeometry.fitWithin(sourceWidth: 3840, sourceHeight: 2160, maxLongEdge: 1920) == VideoGeometry(width: 1920, height: 1080))
+        #expect(VideoGeometry.fitWithin(sourceWidth: 1080, sourceHeight: 1920, maxLongEdge: 1280) == VideoGeometry(width: 720, height: 1280))
     }
 
     @Test
     func testRecordingProfilesSetExpectedLoadLevels() {
         let highGeometry = VideoGeometry(width: 1920, height: 1080)
+        let readableGeometry = VideoGeometry(width: 1920, height: 1080)
         let lowGeometry = VideoGeometry(width: 1280, height: 720)
 
+        #expect(RecordingProfile.defaultProfile == .readableText)
+        #expect(RecordingProfile.readableText.frameRate == 15)
+        #expect(RecordingProfile.readableText.maxLongEdge == 1920)
         #expect(RecordingProfile.highQuality.frameRate == 30)
+        #expect(RecordingProfile.highQuality.maxLongEdge == 1920)
         #expect(RecordingProfile.lowPower.frameRate == 15)
+        #expect(RecordingProfile.lowPower.maxLongEdge == 1280)
+        #expect(RecordingProfile.readableText.bitRate(for: readableGeometry) == 5_000_000)
         #expect(RecordingProfile.highQuality.bitRate(for: highGeometry) == 8_000_000)
         #expect(RecordingProfile.lowPower.bitRate(for: lowGeometry) == 2_000_000)
     }
@@ -163,6 +173,50 @@ struct SegmentRingBufferTests {
         #expect(RecordingPaths.durationStamp(948) == "15m48s")
         #expect(RecordingPaths.durationStamp(1800) == "30m")
         #expect(RecordingPaths.durationStamp(3600) == "60m")
+    }
+
+    @Test
+    func testPerDisplayExportDurationsUseEachDisplayHistory() {
+        let availableDurations = RecordingDurationPlan.perDisplayAvailableHistoryDurations(
+            rawDurations: [3660, 300],
+            retentionDuration: 3600
+        )
+        let exportDurations = RecordingDurationPlan.perDisplayExportDurations(
+            requestedDuration: 3600,
+            availableDurations: availableDurations
+        )
+
+        #expect(RecordingDurationPlan.availableHistoryDuration(rawDuration: 3660, retentionDuration: 3600) == 3600)
+        #expect(availableDurations == [3600, 300])
+        #expect(exportDurations == [3600, 300])
+    }
+
+    @Test
+    func testDisplayScopedRecordingPaths() throws {
+        let directory = try makeTemporaryDirectory()
+        let paths = RecordingPaths(
+            bufferDirectory: directory.appendingPathComponent("Buffer", isDirectory: true),
+            recordingsDirectory: directory.appendingPathComponent("Recordings", isDirectory: true)
+        )
+        let date = Date(timeIntervalSince1970: 1_700_000_123)
+
+        let displayBufferDirectory = paths.bufferDirectory(forDisplayID: 123)
+        #expect(displayBufferDirectory.lastPathComponent == "display-123")
+
+        let segmentURL = paths.makeSegmentURL(displayID: 123, startDate: date)
+        #expect(segmentURL.deletingLastPathComponent() == displayBufferDirectory)
+        #expect(RecordingPaths.segmentStartDate(from: segmentURL) == date)
+
+        let outputDirectory = paths.makeAllDisplaysRecordingDirectory(duration: 65, date: date)
+        #expect(outputDirectory.lastPathComponent.contains("Last 1m05s - All Displays"))
+
+        let displayURL = paths.makeDisplayRecordingURL(
+            in: outputDirectory,
+            displayName: "Main/Display: One\n",
+            displayIndex: 1,
+            displayID: 123
+        )
+        #expect(displayURL.lastPathComponent == "01 - Main-Display-One - Display 123.mov")
     }
 
     @Test

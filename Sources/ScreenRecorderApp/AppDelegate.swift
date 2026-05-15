@@ -16,14 +16,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private let paths = RecordingPaths()
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
-    private var availableHistoryMenuItem: NSMenuItem!
+    private var availableHistoryMenuItems: [NSMenuItem] = []
     private var bufferSizeMenuItem: NSMenuItem!
     private var permissionMenuItem: NSMenuItem!
     private var relaunchMenuItem: NSMenuItem!
-    private var recordingMenuItem: NSMenuItem!
+    private var recordingAdvancedSeparatorItem: NSMenuItem!
     private var profileRootMenuItem: NSMenuItem!
     private var launchAtLoginMenuItem: NSMenuItem!
     private var openLoginItemsSettingsMenuItem: NSMenuItem!
+    private var recordingModeMenuItems: [NSMenuItem] = []
     private var profileMenuItems: [NSMenuItem] = []
     private var saveMenuItems: [NSMenuItem] = []
     private var saveAndTrimMenuItems: [NSMenuItem] = []
@@ -31,18 +32,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private var recorder: ScreenRecorder!
     private var currentState: RecorderState = .stopped
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var applicationObservers: [NSObjectProtocol] = []
     private var availableHistoryTimer: Timer?
     private var savedStatusResetTask: Task<Void, Never>?
     private var savedStatusGeneration = 0
     private var permissionRelaunchPending = false
     private var isStatusMenuOpen = false
+    private var isAdvancedMenuVisible = false
     private var menuModifierMonitor: Any?
+    private var recordingMode = RecordingMode.load()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupMenu()
 
-        recorder = ScreenRecorder(paths: paths) { [weak self] state in
+        recorder = ScreenRecorder(paths: paths, mode: recordingMode) { [weak self] state in
             self?.setState(state)
         }
 
@@ -71,9 +75,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         statusMenuItem = Self.makeInformationalMenuItem(title: currentState.menuStatus)
         menu.addItem(statusMenuItem)
 
-        availableHistoryMenuItem = Self.makeInformationalMenuItem(
+        let availableHistoryMenuItem = Self.makeInformationalMenuItem(
             title: "Available History: 0:00 / \(Self.maxHistoryDisplay)"
         )
+        availableHistoryMenuItems = [availableHistoryMenuItem]
         menu.addItem(availableHistoryMenuItem)
 
         bufferSizeMenuItem = Self.makeInformationalMenuItem(title: "Buffer Size: 0 KB")
@@ -97,13 +102,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
         menu.addItem(.separator())
 
-        recordingMenuItem = NSMenuItem(
-            title: "Recording",
-            action: #selector(toggleRecording),
-            keyEquivalent: ""
-        )
-        recordingMenuItem.target = self
-        menu.addItem(recordingMenuItem)
+        for mode in RecordingMode.allCases {
+            let item = NSMenuItem(
+                title: mode.menuTitle,
+                action: #selector(recordingModeMenuItemClicked(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            recordingModeMenuItems.append(item)
+            menu.addItem(item)
+        }
+
+        recordingAdvancedSeparatorItem = .separator()
+        menu.addItem(recordingAdvancedSeparatorItem)
 
         let profileMenu = NSMenu()
         for profile in RecordingProfile.allCases {
@@ -210,13 +222,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
     func menuWillOpen(_ menu: NSMenu) {
         isStatusMenuOpen = true
+        isAdvancedMenuVisible = Self.isOptionPressed
         installMenuModifierMonitor()
-        updateAdvancedMenuItems(optionPressed: Self.isOptionPressed)
+        updateAdvancedMenuItems(optionPressed: isAdvancedMenuVisible)
         startAvailableHistoryTimer()
     }
 
     func menuDidClose(_ menu: NSMenu) {
         isStatusMenuOpen = false
+        isAdvancedMenuVisible = false
         removeMenuModifierMonitor()
         updateAdvancedMenuItems(optionPressed: false)
         stopAvailableHistoryTimer()
@@ -238,11 +252,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         Self.setInformationalTitle(currentState.menuStatus, for: statusMenuItem)
         permissionMenuItem?.isHidden = currentState != .permissionRequired
         relaunchMenuItem?.isHidden = currentState != .permissionRequired
-        recordingMenuItem?.isEnabled = currentState.canToggleRecording
-        recordingMenuItem?.state = recorder?.isCaptureActive == true ? .on : .off
+        recordingMode = recorder?.currentMode ?? recordingMode
+        recordingModeMenuItems.forEach { item in
+            let rawValue = item.representedObject as? String
+            item.state = rawValue == recordingMode.rawValue ? .on : .off
+            item.isEnabled = currentState.canToggleRecording
+        }
         launchAtLoginMenuItem?.title = LaunchAtLoginController.statusTitle
         launchAtLoginMenuItem?.state = LaunchAtLoginController.isEnabled ? .on : .off
-        updateAdvancedMenuItems(optionPressed: isStatusMenuOpen && Self.isOptionPressed)
+        profileRootMenuItem?.title = "Profile: \(recorder?.currentProfile.title ?? RecordingProfile.defaultProfile.title)"
+        updateAdvancedMenuItems(optionPressed: isStatusMenuOpen && isAdvancedMenuVisible)
         profileMenuItems.forEach { item in
             let rawValue = item.representedObject as? String
             item.state = rawValue == recorder?.currentProfile.rawValue ? .on : .off
@@ -253,8 +272,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     }
 
     private func updateAdvancedMenuItems(optionPressed: Bool) {
-        availableHistoryMenuItem?.isHidden = !optionPressed
+        availableHistoryMenuItems.forEach { $0.isHidden = !optionPressed }
         bufferSizeMenuItem?.isHidden = !optionPressed
+        recordingAdvancedSeparatorItem?.isHidden = !optionPressed
         profileRootMenuItem?.isHidden = !optionPressed
         launchAtLoginMenuItem?.isHidden = !optionPressed
         openLoginItemsSettingsMenuItem?.isHidden = !(optionPressed && LaunchAtLoginController.requiresApproval)
@@ -322,7 +342,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private func installMenuModifierMonitor() {
         removeMenuModifierMonitor()
         menuModifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            self?.updateAdvancedMenuItems(optionPressed: event.modifierFlags.contains(.option))
+            if event.modifierFlags.contains(.option) {
+                self?.isAdvancedMenuVisible = true
+            }
+            self?.updateAdvancedMenuItems(optionPressed: self?.isAdvancedMenuVisible == true)
             return event
         }
     }
@@ -356,10 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
     private func refreshAvailableHistory() {
         guard let recorder else {
-            Self.setInformationalTitle(
-                "Available History: 0:00 / \(Self.maxHistoryDisplay)",
-                for: availableHistoryMenuItem
-            )
+            setAvailableHistoryTitles(["Available History: 0:00 / \(Self.maxHistoryDisplay)"])
             Self.setInformationalTitle(
                 "Buffer Size: \(Self.formatByteCount(bufferDirectorySize()))",
                 for: bufferSizeMenuItem
@@ -367,16 +387,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             return
         }
 
-        let duration = recorder.availableMediaDurationSnapshot()
-        Self.setInformationalTitle(
-            "Available History: \(Self.formatDuration(duration)) / \(Self.maxHistoryDisplay)",
-            for: availableHistoryMenuItem
-        )
+        setAvailableHistoryTitles(Self.availableHistoryTitles(from: recorder.availableHistorySnapshot()))
         Self.setInformationalTitle(
             "Buffer Size: \(Self.formatByteCount(bufferDirectorySize()))",
             for: bufferSizeMenuItem
         )
         statusItem.menu?.update()
+    }
+
+    private func setAvailableHistoryTitles(_ titles: [String]) {
+        let titles = titles.isEmpty ? ["Available History: 0:00 / \(Self.maxHistoryDisplay)"] : titles
+        guard let menu = statusItem?.menu else {
+            return
+        }
+
+        while availableHistoryMenuItems.count < titles.count {
+            let item = Self.makeInformationalMenuItem(title: "")
+            let insertionIndex = menu.index(of: bufferSizeMenuItem)
+            if insertionIndex >= 0 {
+                menu.insertItem(item, at: insertionIndex)
+            } else {
+                menu.addItem(item)
+            }
+            availableHistoryMenuItems.append(item)
+        }
+
+        while availableHistoryMenuItems.count > titles.count {
+            guard let item = availableHistoryMenuItems.popLast() else {
+                break
+            }
+            menu.removeItem(item)
+        }
+
+        for (item, title) in zip(availableHistoryMenuItems, titles) {
+            Self.setInformationalTitle(title, for: item)
+        }
+        updateAdvancedMenuItems(optionPressed: isStatusMenuOpen && isAdvancedMenuVisible)
     }
 
     private func scheduleSavedStatusReset() {
@@ -403,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
                     return
                 }
 
-                self.setState(self.recorder?.isCaptureActive == true ? .recording : .paused)
+                self.setState(self.recorder?.steadyState ?? .paused(.off))
             }
         }
     }
@@ -437,11 +483,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         setState(.exporting)
         Task {
             do {
-                let clip = try await recorder.saveLast(minutes: minutes)
+                let recording = try await recorder.saveLast(minutes: minutes)
                 await MainActor.run {
-                    setState(.saved(clip.url, clip.duration))
+                    setState(.saved(recording))
                     if shouldOpenTrimWindow {
-                        openTrimWindow(for: clip.url)
+                        openTrimWindow(for: recording)
                     }
                 }
             } catch {
@@ -449,6 +495,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
                     setState(.failed(error.localizedDescription))
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func openTrimWindow(for recording: SavedRecording) {
+        switch recording {
+        case .single(let url, _):
+            openTrimWindow(for: url)
+        case .displaySet(_, _, let entries):
+            openTrimWindow(for: entries)
         }
     }
 
@@ -465,8 +521,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         controller.showWindowAndActivate()
     }
 
-    @objc private func toggleRecording() {
-        recorder.setRecordingEnabled(!recorder.isCaptureActive)
+    @MainActor
+    private func openTrimWindow(for entries: [SavedDisplayRecording]) {
+        guard !entries.isEmpty else {
+            return
+        }
+
+        let sources = entries.map { entry in
+            TrimWindowSource(title: entry.displayName, url: entry.url)
+        }
+        let selectedIndex = entries.firstIndex(where: \.isMain) ?? 0
+        let controller = TrimWindowController(sources: sources, selectedIndex: selectedIndex)
+        controller.onClose = { [weak self, weak controller] in
+            guard let controller else {
+                return
+            }
+            self?.trimWindows.removeAll { $0 === controller }
+        }
+        trimWindows.append(controller)
+        controller.showWindowAndActivate()
+    }
+
+    @objc private func recordingModeMenuItemClicked(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = RecordingMode(rawValue: rawValue) else {
+            return
+        }
+
+        recordingMode = mode
+        mode.save()
+        recorder.setRecordingMode(mode)
+        updateMenu()
     }
 
     @objc private func profileMenuItemClicked(_ sender: NSMenuItem) {
@@ -544,9 +629,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     }
 
     private func installWorkspaceObservers() {
-        let notificationCenter = NSWorkspace.shared.notificationCenter
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
 
-        workspaceObservers.append(notificationCenter.addObserver(
+        workspaceObservers.append(workspaceNotificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification,
             object: nil,
             queue: .main
@@ -554,7 +639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             self?.recorder.handleSystemWillSleep()
         })
 
-        workspaceObservers.append(notificationCenter.addObserver(
+        workspaceObservers.append(workspaceNotificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
@@ -562,7 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             self?.recorder.handleSystemDidWake()
         })
 
-        workspaceObservers.append(notificationCenter.addObserver(
+        workspaceObservers.append(workspaceNotificationCenter.addObserver(
             forName: NSWorkspace.screensDidWakeNotification,
             object: nil,
             queue: .main
@@ -570,19 +655,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             self?.recorder.handleSystemDidWake()
         })
 
-        workspaceObservers.append(notificationCenter.addObserver(
+        workspaceObservers.append(workspaceNotificationCenter.addObserver(
             forName: NSWorkspace.sessionDidBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             self?.recorder.handleSystemDidWake()
         })
+
+        let applicationNotificationCenter = NotificationCenter.default
+        applicationObservers.append(applicationNotificationCenter.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.recorder.handleDisplayConfigurationChanged()
+        })
     }
 
     private func removeWorkspaceObservers() {
-        let notificationCenter = NSWorkspace.shared.notificationCenter
-        workspaceObservers.forEach { notificationCenter.removeObserver($0) }
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach { workspaceNotificationCenter.removeObserver($0) }
         workspaceObservers.removeAll()
+
+        let applicationNotificationCenter = NotificationCenter.default
+        applicationObservers.forEach { applicationNotificationCenter.removeObserver($0) }
+        applicationObservers.removeAll()
     }
 
     private static func formatDuration(_ duration: TimeInterval) -> String {
@@ -590,6 +688,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private static func availableHistoryTitles(from snapshot: AvailableHistorySnapshot) -> [String] {
+        guard snapshot.recordingScope == .allDisplays || snapshot.entries.count > 1 else {
+            let duration = snapshot.entries.first?.duration ?? 0
+            return ["Available History: \(formatDuration(duration)) / \(maxHistoryDisplay)"]
+        }
+
+        return snapshot.entries.map { entry in
+            "\(entry.displayName) History: \(formatDuration(entry.duration)) / \(maxHistoryDisplay)"
+        }
     }
 
     private static func formatByteCount(_ bytes: Int64) -> String {

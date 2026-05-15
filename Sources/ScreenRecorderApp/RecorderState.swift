@@ -4,10 +4,10 @@ enum RecorderState: Equatable {
     case stopped
     case permissionRequired
     case starting
-    case recording
-    case paused
+    case recording(RecordingMode)
+    case paused(RecordingMode)
     case exporting
-    case saved(URL, TimeInterval)
+    case saved(SavedRecording)
     case failed(String)
 
     var menuStatus: String {
@@ -18,14 +18,16 @@ enum RecorderState: Equatable {
             return "Screen Recording Permission Required"
         case .starting:
             return "Starting Recording..."
-        case .recording:
-            return "Recording Main Display"
+        case .recording(let mode):
+            return "Recording \(mode.title)"
+        case .paused(.off):
+            return "Recording Off"
         case .paused:
             return "Recording Paused"
         case .exporting:
             return "Saving Clip..."
-        case .saved(let url, let duration):
-            return "Saved \(Self.formatDuration(duration)): \(url.lastPathComponent)"
+        case .saved(let recording):
+            return "Saved \(Self.formatDuration(recording.duration)): \(recording.statusURL.lastPathComponent)"
         case .failed(let message):
             return "Error: \(message)"
         }
@@ -37,6 +39,8 @@ enum RecorderState: Equatable {
             return "REC"
         case .exporting:
             return "SAVE"
+        case .paused(.off):
+            return "OFF"
         case .paused:
             return "PAUSE"
         case .saved:
@@ -63,7 +67,7 @@ enum RecorderState: Equatable {
 
     var canToggleRecording: Bool {
         switch self {
-        case .recording, .paused, .saved, .failed:
+        case .permissionRequired, .recording, .paused, .saved, .failed:
             return true
         default:
             return false

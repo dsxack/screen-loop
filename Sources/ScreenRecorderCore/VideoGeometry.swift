@@ -10,7 +10,20 @@ public struct VideoGeometry: Equatable, Sendable {
     }
 
     public static func fitWithin1080p(sourceWidth: Int, sourceHeight: Int) -> VideoGeometry {
-        fitWithin(sourceWidth: sourceWidth, sourceHeight: sourceHeight, maxHeight: 1080)
+        fitWithin(sourceWidth: sourceWidth, sourceHeight: sourceHeight, maxLongEdge: 1920)
+    }
+
+    public static func fitWithin(sourceWidth: Int, sourceHeight: Int, maxLongEdge: Int) -> VideoGeometry {
+        guard sourceWidth > 0, sourceHeight > 0 else {
+            return VideoGeometry(width: max(2, maxLongEdge), height: max(2, maxLongEdge * 9 / 16))
+        }
+
+        let sourceLongEdge = max(sourceWidth, sourceHeight)
+        let scale = min(1.0, Double(maxLongEdge) / Double(sourceLongEdge))
+        return VideoGeometry(
+            width: evenDimension(Int((Double(sourceWidth) * scale).rounded())),
+            height: evenDimension(Int((Double(sourceHeight) * scale).rounded()))
+        )
     }
 
     public static func fitWithin(sourceWidth: Int, sourceHeight: Int, maxHeight: Int) -> VideoGeometry {
