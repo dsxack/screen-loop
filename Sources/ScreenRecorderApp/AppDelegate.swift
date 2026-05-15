@@ -9,6 +9,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private static let informationalMenuItemRightInset: CGFloat = 16
     private static let informationalMenuItemMinimumWidth: CGFloat = 280
 
+    private static var applicationTitle: String {
+        let bundle = Bundle.main
+        let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "Screen Loop"
+        guard let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              !version.isEmpty else {
+            return name
+        }
+        return "\(name) \(version)"
+    }
+
     private static var isOptionPressed: Bool {
         NSEvent.modifierFlags.contains(.option)
     }
@@ -73,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
         let menu = NSMenu()
 
-        statusMenuItem = Self.makeInformationalMenuItem(title: currentState.menuStatus)
+        statusMenuItem = Self.makeInformationalMenuItem(title: Self.applicationTitle)
         menu.addItem(statusMenuItem)
 
         let availableHistoryMenuItem = Self.makeInformationalMenuItem(
@@ -158,12 +170,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
         menu.addItem(.separator())
 
-        let saveHeaderItem = NSMenuItem(title: "Save Last", action: nil, keyEquivalent: "")
-        saveHeaderItem.isEnabled = false
+        let saveHeaderItem = Self.makeInformationalMenuItem(title: "Save Last")
         menu.addItem(saveHeaderItem)
 
-        let saveAndTrimHeaderItem = NSMenuItem(title: "Save and Trim Last", action: nil, keyEquivalent: "")
-        saveAndTrimHeaderItem.isEnabled = false
+        let saveAndTrimHeaderItem = Self.makeInformationalMenuItem(title: "Save and Trim Last")
         saveAndTrimHeaderItem.isAlternate = true
         saveAndTrimHeaderItem.keyEquivalentModifierMask = [.option]
         menu.addItem(saveAndTrimHeaderItem)
@@ -255,7 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
     private func updateMenu() {
         statusItem?.button?.title = currentState.statusItemTitle
-        Self.setInformationalTitle(currentState.menuStatus, for: statusMenuItem)
+        Self.setInformationalTitle(Self.applicationTitle, for: statusMenuItem)
         permissionMenuItem?.isHidden = currentState != .permissionRequired
         relaunchMenuItem?.isHidden = currentState != .permissionRequired
         recordingMode = recorder?.currentMode ?? recordingMode
