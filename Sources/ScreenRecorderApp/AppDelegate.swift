@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private var openLoginItemsSettingsMenuItem: NSMenuItem!
     private var profileMenuItems: [NSMenuItem] = []
     private var saveMenuItems: [NSMenuItem] = []
+    private var saveAndTrimMenuItems: [NSMenuItem] = []
     private var trimWindows: [TrimWindowController] = []
     private var recorder: ScreenRecorder!
     private var currentState: RecorderState = .stopped
@@ -134,9 +135,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
 
         menu.addItem(.separator())
 
+        let saveHeaderItem = NSMenuItem(title: "Save Last", action: nil, keyEquivalent: "")
+        saveHeaderItem.isEnabled = false
+        menu.addItem(saveHeaderItem)
+
+        let saveAndTrimHeaderItem = NSMenuItem(title: "Save and Trim Last", action: nil, keyEquivalent: "")
+        saveAndTrimHeaderItem.isEnabled = false
+        saveAndTrimHeaderItem.isAlternate = true
+        saveAndTrimHeaderItem.keyEquivalentModifierMask = [.option]
+        menu.addItem(saveAndTrimHeaderItem)
+
         for minutes in [3, 5, 15, 30, 45, 60] {
             let item = NSMenuItem(
-                title: "Save Last \(minutes) Minutes",
+                title: "\(minutes) Minutes",
                 action: #selector(saveMenuItemClicked(_:)),
                 keyEquivalent: ""
             )
@@ -145,6 +156,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             item.isEnabled = false
             saveMenuItems.append(item)
             menu.addItem(item)
+
+            let trimItem = NSMenuItem(
+                title: "\(minutes) Minutes",
+                action: #selector(saveMenuItemClicked(_:)),
+                keyEquivalent: ""
+            )
+            trimItem.target = self
+            trimItem.representedObject = minutes
+            trimItem.tag = 1
+            trimItem.isEnabled = false
+            trimItem.isAlternate = true
+            trimItem.keyEquivalentModifierMask = [.option]
+            saveAndTrimMenuItems.append(trimItem)
+            menu.addItem(trimItem)
         }
 
         menu.addItem(.separator())
@@ -219,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             item.isEnabled = currentState != .starting && currentState != .exporting
         }
         saveMenuItems.forEach { $0.isEnabled = currentState.canSave }
+        saveAndTrimMenuItems.forEach { $0.isEnabled = currentState.canSave }
     }
 
     private func updateAdvancedMenuItems(optionPressed: Bool) {
@@ -332,13 +358,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             return
         }
 
+        let shouldOpenTrimWindow = sender.tag == 1
         setState(.exporting)
         Task {
             do {
                 let clip = try await recorder.saveLast(minutes: minutes)
                 await MainActor.run {
                     setState(.saved(clip.url, clip.duration))
-                    openTrimWindow(for: clip.url)
+                    if shouldOpenTrimWindow {
+                        openTrimWindow(for: clip.url)
+                    }
                 }
             } catch {
                 await MainActor.run {

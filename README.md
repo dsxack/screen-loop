@@ -37,12 +37,12 @@ tccutil reset ScreenCapture local.screen-recorder
 Menu actions:
 
 - `Recording`: pause or resume capture.
-- `Save Last 3/5/15/30/45/60 Minutes`: export a clip from the rolling buffer.
-- Hold `Option`/`Alt` while the menu is open to show `Available History`, `Profile`, `Launch at Login`, and `Open Buffer Folder`.
+- `Save Last` > `3/5/15/30/45/60 Minutes`: export a clip from the rolling buffer.
+- Hold `Option`/`Alt` while the menu is open to show `Available History`, `Profile`, `Launch at Login`, `Open Buffer Folder`, and `Save and Trim Last`.
 
 If less history is available than requested, the app saves the available history and names the file with the actual exported duration.
 
-After a clip is saved, `Trim Clip` opens automatically. Use the preview with `Start` and `End` controls, then choose `Create New` or `Replace Original`.
+To trim immediately after saving, hold `Option`/`Alt` and choose a duration under `Save and Trim Last`. The `Trim Clip` window opens for the exported file.
 
 The recorder listens for macOS sleep/wake and active-session notifications. If recording was enabled before sleep, capture is restarted automatically after wake.
 
