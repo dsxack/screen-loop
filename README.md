@@ -2,7 +2,7 @@
 
 Native macOS menu bar recorder that keeps a rolling 60-minute recorded-media buffer and can save the last 3, 5, 15, 30, 45, or 60 minutes.
 
-The default recording profile is `Low Power` (`720p`, `15fps`). The menu also includes `High Quality` (`1080p`, `30fps`) and a `Recording` toggle for pausing/resuming capture.
+The default recording profile is `Low Power` (`720p`, `15fps`). The menu includes a `Recording` toggle for pausing/resuming capture; advanced items are available by holding `Option`/`Alt` while the menu is open.
 
 ## Build
 
@@ -26,7 +26,7 @@ open ".build/app/Screen Recorder.app"
 
 The app runs as a menu bar item without a Dock icon. On first launch, use the menu item to grant Screen Recording permission if macOS has not already granted it. If macOS applies the permission but the system "Quit & Reopen" button does not bring the menu bar item back, the app schedules its own relaunch; `Relaunch Screen Recorder` is also available in the app menu while permission is pending.
 
-The app enables `Launch at Login` by default on first launch. You can turn it off from the menu.
+The app enables `Launch at Login` by default on first launch. You can turn it off from the `Option`/`Alt` menu.
 
 Local builds are ad-hoc signed with a stable designated requirement so macOS privacy permissions survive app rebuilds more reliably. If an older build left Screen Recording permissions stuck, reset the old entry once:
 
@@ -36,13 +36,9 @@ tccutil reset ScreenCapture local.screen-recorder
 
 Menu actions:
 
-- `Available History`: shows how much video is currently available to export, capped at `60:00`; it updates while the menu is open.
 - `Recording`: pause or resume capture.
-- `Profile > Low Power`: lower CPU/GPU and disk usage.
-- `Profile > High Quality`: higher visual quality, higher sustained load.
-- `Launch at Login`: enable or disable launch on macOS login.
 - `Save Last 3/5/15/30/45/60 Minutes`: export a clip from the rolling buffer.
-- Hold `Option`/`Alt` while the menu is open to change `Open Recordings Folder` into `Open Buffer Folder`.
+- Hold `Option`/`Alt` while the menu is open to show `Available History`, `Profile`, `Launch at Login`, and `Open Buffer Folder`.
 
 If less history is available than requested, the app saves the available history and names the file with the actual exported duration.
 

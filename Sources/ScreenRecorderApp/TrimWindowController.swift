@@ -9,6 +9,7 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
     private let trimmer = VideoTrimmer()
     private let minimumRange: TimeInterval = 0.5
     private let playbackBoundaryTolerance: TimeInterval = 0.05
+    private var sourceAsset: AVURLAsset
     private let player = AVPlayer()
     private let playerView = AVPlayerView()
     private let rangeSlider = RangeSliderControl()
@@ -25,6 +26,8 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
     private var isUpdatingControls = false
     private var isExporting = false
     private var isSeekingPlayer = false
+    private var previewGeneration = 0
+    private var previewRefreshTask: Task<Void, Never>?
     private var playerRateObservation: NSKeyValueObservation?
     private var playerTimeObserver: Any?
 
@@ -32,6 +35,7 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
     init(sourceURL: URL) {
         self.sourceURL = sourceURL
+        self.sourceAsset = AVURLAsset(url: sourceURL)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 620),
@@ -62,6 +66,7 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         player.pause()
+        previewRefreshTask?.cancel()
         removePlayerObservers()
         onClose?()
     }
@@ -103,16 +108,34 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
         let startLabel = NSTextField(labelWithString: "Start")
         let endLabel = NSTextField(labelWithString: "End")
-        let spacer = NSView()
-        let grid = NSGridView(views: [
-            [startLabel, rangeSlider, startField],
-            [endLabel, spacer, endField]
-        ])
-        grid.translatesAutoresizingMaskIntoConstraints = false
-        grid.rowSpacing = 10
-        grid.columnSpacing = 10
-        grid.column(at: 1).xPlacement = .fill
+
+        let startGroup = NSStackView(views: [startLabel, startField])
+        startGroup.orientation = .horizontal
+        startGroup.alignment = .centerY
+        startGroup.spacing = 8
+
+        let endGroup = NSStackView(views: [endLabel, endField])
+        endGroup.orientation = .horizontal
+        endGroup.alignment = .centerY
+        endGroup.spacing = 8
+
+        let headerSpacer = NSView()
+        let rangeHeader = NSStackView(views: [startGroup, headerSpacer, endGroup])
+        rangeHeader.orientation = .horizontal
+        rangeHeader.alignment = .centerY
+        rangeHeader.spacing = 12
+        rangeHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        startGroup.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        endGroup.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         rangeSlider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let rangeStack = NSStackView(views: [rangeHeader, rangeSlider])
+        rangeStack.orientation = .vertical
+        rangeStack.alignment = .leading
+        rangeStack.spacing = 8
+        rangeStack.translatesAutoresizingMaskIntoConstraints = false
 
         let buttonStack = NSStackView(views: [cancelButton, replaceButton, createNewButton])
         buttonStack.orientation = .horizontal
@@ -121,7 +144,7 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
         buttonStack.distribution = .gravityAreas
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let controlsStack = NSStackView(views: [grid, statusLabel, buttonStack])
+        let controlsStack = NSStackView(views: [rangeStack, statusLabel, buttonStack])
         controlsStack.orientation = .vertical
         controlsStack.alignment = .leading
         controlsStack.spacing = 14
@@ -141,7 +164,9 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
             controlsStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             controlsStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
 
-            grid.widthAnchor.constraint(equalTo: controlsStack.widthAnchor),
+            rangeStack.widthAnchor.constraint(equalTo: controlsStack.widthAnchor),
+            rangeHeader.widthAnchor.constraint(equalTo: rangeStack.widthAnchor),
+            rangeSlider.widthAnchor.constraint(equalTo: rangeStack.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: controlsStack.widthAnchor),
             buttonStack.widthAnchor.constraint(equalTo: controlsStack.widthAnchor)
         ])
@@ -150,12 +175,9 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func loadClip() {
-        player.replaceCurrentItem(with: AVPlayerItem(url: sourceURL))
-
         Task {
             do {
-                let asset = AVURLAsset(url: sourceURL)
-                let loadedDuration = try await asset.load(.duration).seconds
+                let loadedDuration = try await sourceAsset.load(.duration).seconds
                 guard loadedDuration.isFinite, loadedDuration >= minimumRange else {
                     statusLabel.stringValue = "Clip is too short to trim."
                     return
@@ -167,7 +189,7 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
                 rangeSlider.minimumValue = 0
                 rangeSlider.maximumValue = loadedDuration
                 setControlsEnabled(true)
-                updateControls(seekTo: .zero)
+                updateControls(seekToSourceTime: .zero)
                 statusLabel.stringValue = "Choose start and end, then save the trimmed clip."
             } catch {
                 statusLabel.stringValue = "Could not load clip: \(error.localizedDescription)"
@@ -196,13 +218,13 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
         switch sender.activeHandle {
         case .lower:
-            updateControls(seekTo: startTime)
+            updateControls(seekToSourceTime: startTime)
         case .upper:
-            updateControls(seekTo: endTime)
+            updateControls(seekToSourceTime: endTime)
         case nil:
             let startDelta = abs(startTime - previousStart)
             let endDelta = abs(endTime - previousEnd)
-            updateControls(seekTo: startDelta >= endDelta ? startTime : endTime)
+            updateControls(seekToSourceTime: startDelta >= endDelta ? startTime : endTime)
         }
     }
 
@@ -214,10 +236,10 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
         if sender === startField {
             startTime = min(max(0, parsedTime), max(0, endTime - minimumRange))
-            updateControls(seekTo: startTime)
+            updateControls(seekToSourceTime: startTime)
         } else {
             endTime = max(min(duration, parsedTime), min(duration, startTime + minimumRange))
-            updateControls(seekTo: endTime)
+            updateControls(seekToSourceTime: endTime)
         }
     }
 
@@ -233,18 +255,14 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
         close()
     }
 
-    private func updateControls(seekTo time: TimeInterval? = nil) {
+    private func updateControls(seekToSourceTime time: TimeInterval? = nil) {
         isUpdatingControls = true
         rangeSlider.setRange(lower: startTime, upper: endTime)
         startField.stringValue = Self.formatTime(startTime)
         endField.stringValue = Self.formatTime(endTime)
         isUpdatingControls = false
 
-        if let time {
-            seekPlayer(to: time)
-        } else {
-            clampCurrentPreviewToSelectedRange()
-        }
+        schedulePreviewRefresh(seekToSourceTime: time)
     }
 
     private func installPlayerObservers() {
@@ -284,8 +302,8 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        if currentTime < startTime - playbackBoundaryTolerance || currentTime >= endTime - playbackBoundaryTolerance {
-            seekPlayer(to: startTime, resumePlayback: true)
+        if currentTime >= previewDuration - playbackBoundaryTolerance {
+            seekPlayer(toPreviewTime: .zero, resumePlayback: true)
         }
     }
 
@@ -294,30 +312,93 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        if currentTime >= endTime - playbackBoundaryTolerance {
+        if currentTime >= previewDuration - playbackBoundaryTolerance {
             player.pause()
-            seekPlayer(to: endTime)
-        } else if currentTime < startTime - playbackBoundaryTolerance {
-            seekPlayer(to: startTime, resumePlayback: true)
+            seekPlayer(toPreviewTime: previewDuration)
+        } else if currentTime < 0 {
+            seekPlayer(toPreviewTime: .zero, resumePlayback: true)
         }
     }
 
-    private func clampCurrentPreviewToSelectedRange() {
-        let currentTime = player.currentTime().seconds
-        guard currentTime.isFinite else {
+    private var previewDuration: TimeInterval {
+        max(0, endTime - startTime)
+    }
+
+    private func schedulePreviewRefresh(seekToSourceTime sourceTime: TimeInterval?) {
+        let sourceStart = startTime
+        let rangeDuration = previewDuration
+        let asset = sourceAsset
+        let currentPreviewTime = player.currentTime().seconds
+        let previewSeekTime = if let sourceTime {
+            min(max(0, sourceTime - sourceStart), rangeDuration)
+        } else if currentPreviewTime.isFinite {
+            min(max(0, currentPreviewTime), rangeDuration)
+        } else {
+            TimeInterval.zero
+        }
+        let shouldResume = player.rate > 0
+
+        previewGeneration += 1
+        let generation = previewGeneration
+        previewRefreshTask?.cancel()
+        previewRefreshTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 60_000_000)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await refreshPreviewItem(
+                asset: asset,
+                sourceStart: sourceStart,
+                duration: rangeDuration,
+                seekToPreviewTime: previewSeekTime,
+                resumePlayback: shouldResume,
+                generation: generation
+            )
+        }
+    }
+
+    private func refreshPreviewItem(
+        asset: AVURLAsset,
+        sourceStart: TimeInterval,
+        duration: TimeInterval,
+        seekToPreviewTime: TimeInterval,
+        resumePlayback: Bool,
+        generation: Int
+    ) async {
+        guard duration >= minimumRange else {
             return
         }
 
-        if currentTime < startTime - playbackBoundaryTolerance {
-            seekPlayer(to: startTime, resumePlayback: player.rate > 0)
-        } else if currentTime > endTime + playbackBoundaryTolerance {
-            player.pause()
-            seekPlayer(to: endTime)
+        do {
+            let composition = AVMutableComposition()
+            try await composition.insertTimeRange(
+                CMTimeRange(
+                    start: CMTime(seconds: sourceStart, preferredTimescale: 600),
+                    duration: CMTime(seconds: duration, preferredTimescale: 600)
+                ),
+                of: asset,
+                at: .zero
+            )
+
+            guard generation == previewGeneration, !Task.isCancelled else {
+                return
+            }
+
+            player.replaceCurrentItem(with: AVPlayerItem(asset: composition))
+            seekPlayer(toPreviewTime: seekToPreviewTime, resumePlayback: resumePlayback)
+        } catch {
+            statusLabel.stringValue = "Could not update preview: \(error.localizedDescription)"
         }
     }
 
-    private func seekPlayer(to time: TimeInterval, resumePlayback: Bool = false) {
-        let clampedTime = min(max(0, time), max(0, duration))
+    private func seekPlayer(toPreviewTime time: TimeInterval, resumePlayback: Bool = false) {
+        let clampedTime = min(max(0, time), max(0, previewDuration))
         isSeekingPlayer = true
         player.seek(
             to: CMTime(seconds: clampedTime, preferredTimescale: 600),
@@ -353,12 +434,12 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
                 )
 
                 if result.replacedOriginal {
-                    player.replaceCurrentItem(with: AVPlayerItem(url: result.url))
+                    sourceAsset = AVURLAsset(url: result.url)
                     duration = result.duration
                     startTime = 0
                     endTime = result.duration
                     rangeSlider.maximumValue = result.duration
-                    updateControls(seekTo: .zero)
+                    updateControls(seekToSourceTime: .zero)
                     statusLabel.stringValue = "Replaced original: \(result.url.lastPathComponent)"
                 } else {
                     statusLabel.stringValue = "Created: \(result.url.lastPathComponent)"

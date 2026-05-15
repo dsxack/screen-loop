@@ -4,6 +4,9 @@ import ScreenRecorderCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked Sendable {
     private static let maxHistoryDisplay = "60:00"
+    private static var isOptionPressed: Bool {
+        NSEvent.modifierFlags.contains(.option)
+    }
 
     private let paths = RecordingPaths()
     private var statusItem: NSStatusItem!
@@ -12,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private var permissionMenuItem: NSMenuItem!
     private var relaunchMenuItem: NSMenuItem!
     private var recordingMenuItem: NSMenuItem!
+    private var profileRootMenuItem: NSMenuItem!
     private var launchAtLoginMenuItem: NSMenuItem!
     private var openLoginItemsSettingsMenuItem: NSMenuItem!
     private var profileMenuItems: [NSMenuItem] = []
@@ -24,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private var savedStatusResetTask: Task<Void, Never>?
     private var savedStatusGeneration = 0
     private var permissionRelaunchPending = false
+    private var isStatusMenuOpen = false
+    private var menuModifierMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -106,9 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
             profileMenu.addItem(item)
         }
 
-        let profileRootItem = NSMenuItem(title: "Profile", action: nil, keyEquivalent: "")
-        profileRootItem.submenu = profileMenu
-        menu.addItem(profileRootItem)
+        profileRootMenuItem = NSMenuItem(title: "Profile", action: nil, keyEquivalent: "")
+        profileRootMenuItem.submenu = profileMenu
+        menu.addItem(profileRootMenuItem)
 
         launchAtLoginMenuItem = NSMenuItem(
             title: "Launch at Login",
@@ -173,10 +179,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        isStatusMenuOpen = true
+        installMenuModifierMonitor()
+        updateAdvancedMenuItems(optionPressed: Self.isOptionPressed)
         startAvailableHistoryTimer()
     }
 
     func menuDidClose(_ menu: NSMenu) {
+        isStatusMenuOpen = false
+        removeMenuModifierMonitor()
+        updateAdvancedMenuItems(optionPressed: false)
         stopAvailableHistoryTimer()
     }
 
@@ -200,13 +212,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         recordingMenuItem?.state = recorder?.isCaptureActive == true ? .on : .off
         launchAtLoginMenuItem?.title = LaunchAtLoginController.statusTitle
         launchAtLoginMenuItem?.state = LaunchAtLoginController.isEnabled ? .on : .off
-        openLoginItemsSettingsMenuItem?.isHidden = !LaunchAtLoginController.requiresApproval
+        updateAdvancedMenuItems(optionPressed: isStatusMenuOpen && Self.isOptionPressed)
         profileMenuItems.forEach { item in
             let rawValue = item.representedObject as? String
             item.state = rawValue == recorder?.currentProfile.rawValue ? .on : .off
             item.isEnabled = currentState != .starting && currentState != .exporting
         }
         saveMenuItems.forEach { $0.isEnabled = currentState.canSave }
+    }
+
+    private func updateAdvancedMenuItems(optionPressed: Bool) {
+        availableHistoryMenuItem?.isHidden = !optionPressed
+        profileRootMenuItem?.isHidden = !optionPressed
+        launchAtLoginMenuItem?.isHidden = !optionPressed
+        openLoginItemsSettingsMenuItem?.isHidden = !(optionPressed && LaunchAtLoginController.requiresApproval)
+
+        if isStatusMenuOpen {
+            statusItem?.menu?.update()
+        }
+    }
+
+    private func installMenuModifierMonitor() {
+        removeMenuModifierMonitor()
+        menuModifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.updateAdvancedMenuItems(optionPressed: event.modifierFlags.contains(.option))
+            return event
+        }
+    }
+
+    private func removeMenuModifierMonitor() {
+        guard let menuModifierMonitor else {
+            return
+        }
+
+        NSEvent.removeMonitor(menuModifierMonitor)
+        self.menuModifierMonitor = nil
     }
 
     private func startAvailableHistoryTimer() {
