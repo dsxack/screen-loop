@@ -29,7 +29,6 @@ struct DemoFrame {
     let source: String
     let crop: Rect
     let sharpRects: [Rect]
-    let privacyBlurRects: [Rect]
     let delay: Double
 }
 
@@ -104,10 +103,11 @@ func captureDemoFrames(rawDirectoryPath: String, trimFramePath: String) throws {
 
     let recStatusItem = CGPoint(x: 1100, y: 16)
     let normalRecordingRow = CGPoint(x: 1210, y: 92)
-    let normalSaveFiveMinutesRow = CGPoint(x: 1130, y: 199)
-    let altProfileRow = CGPoint(x: 1210, y: 181)
-    let altTrimFiveMinutesRow = CGPoint(x: 1130, y: 312)
-    let altTrimOneMinuteRow = CGPoint(x: 1130, y: 265)
+    let normalSaveFiveMinutesRow = CGPoint(x: 1130, y: 225)
+    let altProfileRow = CGPoint(x: 1210, y: 205)
+    let altTrimFiveMinutesRow = CGPoint(x: 1130, y: 340)
+    let altTrimOneMinuteRow = CGPoint(x: 1130, y: 292)
+    let trimVideoControlsPoint = CGPoint(x: 760, y: 615)
     let commandKeyCode: CGKeyCode = 55
     let optionKeyCode: CGKeyCode = 58
     let hKeyCode: CGKeyCode = 4
@@ -236,6 +236,10 @@ func captureDemoFrames(rawDirectoryPath: String, trimFramePath: String) throws {
     click(altTrimOneMinuteRow)
     option(false)
     wait(10.0)
+    move(trimVideoControlsPoint)
+    wait(0.35)
+    move(CGPoint(x: trimVideoControlsPoint.x + 8, y: trimVideoControlsPoint.y))
+    wait(0.7)
     try captureScreenshot(trimFramePath)
     closeActiveWindow()
 }
@@ -250,7 +254,6 @@ let frames = [
         source: "\(rawDirectoryPath)/01-normal.png",
         crop: menuCrop,
         sharpRects: [statusItem, normalMenu],
-        privacyBlurRects: [],
         delay: 1.15
     ),
     DemoFrame(
@@ -258,7 +261,6 @@ let frames = [
         source: "\(rawDirectoryPath)/02-recording-submenu.png",
         crop: menuCrop,
         sharpRects: [statusItem, submenuMenu],
-        privacyBlurRects: [],
         delay: 1.35
     ),
     DemoFrame(
@@ -266,7 +268,6 @@ let frames = [
         source: "\(rawDirectoryPath)/07-profile-submenu.png",
         crop: menuCrop,
         sharpRects: [statusItem, submenuMenu],
-        privacyBlurRects: [],
         delay: 1.35
     ),
     DemoFrame(
@@ -274,7 +275,6 @@ let frames = [
         source: "\(rawDirectoryPath)/03-save-hover.png",
         crop: menuCrop,
         sharpRects: [statusItem, normalMenu],
-        privacyBlurRects: [],
         delay: 1.0
     ),
     DemoFrame(
@@ -282,7 +282,6 @@ let frames = [
         source: "\(rawDirectoryPath)/06-option-click-open.png",
         crop: menuCrop,
         sharpRects: [statusItem, normalMenu],
-        privacyBlurRects: [],
         delay: 1.15
     ),
     DemoFrame(
@@ -290,7 +289,6 @@ let frames = [
         source: "\(rawDirectoryPath)/04-option.png",
         crop: menuCrop,
         sharpRects: [statusItem, normalMenu],
-        privacyBlurRects: [],
         delay: 1.15
     ),
     DemoFrame(
@@ -298,7 +296,6 @@ let frames = [
         source: "\(rawDirectoryPath)/05-trim-hover.png",
         crop: menuCrop,
         sharpRects: [statusItem, normalMenu],
-        privacyBlurRects: [],
         delay: 1.0
     ),
     DemoFrame(
@@ -306,7 +303,6 @@ let frames = [
         source: trimFramePath,
         crop: trimCrop,
         sharpRects: [trimWindow],
-        privacyBlurRects: [trimPreview],
         delay: 1.8
     )
 ]
@@ -338,38 +334,6 @@ func crop(_ image: CGImage, to rect: Rect) throws -> CGImage {
     return cropped
 }
 
-func blurred(_ image: CGImage, radius: Double) throws -> CGImage {
-    let width = CGFloat(image.width)
-    let height = CGFloat(image.height)
-    let factor = max(CGFloat(radius), 1)
-    let smallSize = NSSize(
-        width: max(1, floor(width / factor)),
-        height: max(1, floor(height / factor))
-    )
-
-    let small = NSImage(size: smallSize)
-    small.lockFocus()
-    NSGraphicsContext.current?.imageInterpolation = .high
-    drawImage(image, in: CGRect(origin: .zero, size: smallSize))
-    small.unlockFocus()
-
-    let large = NSImage(size: NSSize(width: width, height: height))
-    large.lockFocus()
-    NSGraphicsContext.current?.imageInterpolation = .high
-    small.draw(in: CGRect(x: 0, y: 0, width: width, height: height))
-    large.unlockFocus()
-
-    var proposed = CGRect(x: 0, y: 0, width: width, height: height)
-    guard let result = large.cgImage(forProposedRect: &proposed, context: nil, hints: nil) else {
-        throw NSError(
-            domain: "ScreenLoopDemo",
-            code: 4,
-            userInfo: [NSLocalizedDescriptionKey: "Could not blur \(image.width)x\(image.height) frame"]
-        )
-    }
-    return result
-}
-
 func drawImage(_ image: CGImage, in rect: CGRect, alpha: CGFloat = 1) {
     NSGraphicsContext.current?.cgContext.saveGState()
     NSGraphicsContext.current?.cgContext.setAlpha(alpha)
@@ -394,14 +358,13 @@ func roundedClipPath(_ rect: CGRect, radius: CGFloat) -> NSBezierPath {
 func render(_ frame: DemoFrame) throws -> CGImage {
     let source = try loadImage(frame.source)
     let croppedSource = try crop(source, to: frame.crop)
-    let blurredCrop = try blurred(croppedSource, radius: 22)
 
     let image = NSImage(size: canvas)
     image.lockFocus()
     NSColor.black.setFill()
     CGRect(origin: .zero, size: canvas).fill()
 
-    drawImage(blurredCrop, in: CGRect(origin: .zero, size: canvas))
+    drawImage(croppedSource, in: CGRect(origin: .zero, size: canvas))
     NSColor(calibratedWhite: 0, alpha: 0.24).setFill()
     CGRect(origin: .zero, size: canvas).fill()
 
@@ -413,21 +376,6 @@ func render(_ frame: DemoFrame) throws -> CGImage {
         roundedClipPath(destination.insetBy(dx: -2, dy: -2), radius: 14).addClip()
         drawImage(part, in: destination)
         NSGraphicsContext.current?.cgContext.restoreGState()
-    }
-
-    for privateRect in frame.privacyBlurRects {
-        guard let clipped = privateRect.intersection(frame.crop) else { continue }
-        let cropRelative = Rect(
-            x: clipped.x - frame.crop.x,
-            y: clipped.y - frame.crop.y,
-            width: clipped.width,
-            height: clipped.height
-        )
-        let part = try crop(blurredCrop, to: cropRelative)
-        let destination = destinationRect(for: clipped, crop: frame.crop)
-        drawImage(part, in: destination)
-        NSColor(calibratedWhite: 0, alpha: 0.18).setFill()
-        roundedClipPath(destination, radius: 8).fill()
     }
 
     image.unlockFocus()
