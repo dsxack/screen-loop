@@ -23,8 +23,7 @@ cask "screen-loop" do
   version "$VERSION"
   sha256 "$SHA256"
 
-  url "https://github.com/dsxack/screen-loop/releases/download/v#{version}/$ARCHIVE_NAME",
-      verified: "github.com/dsxack/screen-loop/"
+  url "https://github.com/dsxack/screen-loop/releases/download/v#{version}/$ARCHIVE_NAME"
   name "Screen Loop"
   desc "Menu bar screen recorder with a rolling buffer for saving recent history"
   homepage "https://github.com/dsxack/screen-loop"
