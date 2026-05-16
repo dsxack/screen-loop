@@ -92,7 +92,7 @@ public final class ClipExporter {
                    headExtension: plannedRange.audioHeadExtension,
                    tailExtension: plannedRange.audioTailExtension
                ) {
-                let trackIndex = rangeIndex % 2
+                let trackIndex = plannedRange.usesAudioCrossfade ? rangeIndex % 2 : 0
                 try Self.prepareAudioTracks(
                     audioOutputTracks: &audioOutputTracks,
                     audioMixParameters: &audioMixParameters,
@@ -373,6 +373,10 @@ private struct PlannedSegmentRange {
     let endDate: Date
     let audioHeadExtension: TimeInterval
     let audioTailExtension: TimeInterval
+
+    var usesAudioCrossfade: Bool {
+        audioHeadExtension > 0 || audioTailExtension > 0
+    }
 }
 
 private struct AudioInsertion {

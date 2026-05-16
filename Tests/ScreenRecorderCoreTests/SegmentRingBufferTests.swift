@@ -440,7 +440,7 @@ struct SegmentRingBufferTests {
         let asset = AVURLAsset(url: exportedURL)
         let exportedDuration = try await asset.load(.duration).seconds
 
-        #expect(selection.requestedDuration == 2.2)
+        #expect(abs(selection.requestedDuration - 2.2) < 0.0001)
         #expect(abs(exportedDuration - 2.2) < 0.35)
     }
 
@@ -884,32 +884,36 @@ struct SegmentRingBufferTests {
 
     private func readSamplePresentationTimes(url: URL, mediaType: AVMediaType) async throws -> [Double] {
         let asset = AVURLAsset(url: url)
-        let track = try #require(try await asset.loadTracks(withMediaType: mediaType).first)
-        let reader = try AVAssetReader(asset: asset)
-        let outputSettings: [String: Any]? = mediaType == .video
-            ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-            : nil
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
-
-        guard reader.canAdd(output) else {
-            throw TestVideoError("Could not add reader output.")
-        }
-        reader.add(output)
-
-        guard reader.startReading() else {
-            throw reader.error ?? TestVideoError("Could not start reader.")
-        }
-
+        let tracks = try await asset.loadTracks(withMediaType: mediaType)
+        try #require(!tracks.isEmpty)
         var times: [Double] = []
-        while let sampleBuffer = output.copyNextSampleBuffer() {
-            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
-            if presentationTime.isFinite {
-                times.append(presentationTime)
-            }
-        }
 
-        if reader.status == .failed {
-            throw reader.error ?? TestVideoError("Reader failed.")
+        for track in tracks {
+            let reader = try AVAssetReader(asset: asset)
+            let outputSettings: [String: Any]? = mediaType == .video
+                ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+                : nil
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
+
+            guard reader.canAdd(output) else {
+                throw TestVideoError("Could not add reader output.")
+            }
+            reader.add(output)
+
+            guard reader.startReading() else {
+                throw reader.error ?? TestVideoError("Could not start reader.")
+            }
+
+            while let sampleBuffer = output.copyNextSampleBuffer() {
+                let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+                if presentationTime.isFinite {
+                    times.append(presentationTime)
+                }
+            }
+
+            if reader.status == .failed {
+                throw reader.error ?? TestVideoError("Reader failed.")
+            }
         }
 
         return times.sorted()
