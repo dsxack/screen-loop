@@ -28,6 +28,16 @@ build_app() {
         bash "$ROOT_DIR/scripts/build-app.sh"
 }
 
+codesign_app() {
+    if command -v codesign >/dev/null 2>&1; then
+        codesign \
+            --force \
+            --sign - \
+            --requirements '=designated => identifier "com.dsxack.screen-loop"' \
+            "$APP_BUNDLE" >/dev/null 2>&1 || true
+    fi
+}
+
 archive_label() {
     local archs="$1"
     if [[ "$archs" == *" "* ]]; then
@@ -42,6 +52,47 @@ has_xcbuild() {
         [[ -x "/Library/Developer/SharedFrameworks/XCBuild.framework/Versions/A/Support/xcbuild" ]]
 }
 
+build_universal_app_from_slices() {
+    local archs="$1"
+    local slice_dir="$ROOT_DIR/.build/package-slices"
+    local slices=()
+
+    if ! command -v lipo >/dev/null 2>&1; then
+        echo "Universal package fallback requires lipo." >&2
+        return 1
+    fi
+
+    rm -rf "$slice_dir"
+    mkdir -p "$slice_dir"
+
+    for arch in $archs; do
+        echo "Building $arch slice for universal package." >&2
+        build_app "$arch"
+
+        local slice="$slice_dir/ScreenRecorderApp-$arch"
+        cp "$EXECUTABLE" "$slice"
+        slices+=("$slice")
+    done
+
+    local universal_executable="$slice_dir/ScreenRecorderApp-universal"
+    lipo -create "${slices[@]}" -output "$universal_executable"
+    cp "$universal_executable" "$EXECUTABLE"
+    codesign_app
+}
+
+build_universal_app() {
+    local archs="$1"
+
+    if has_xcbuild; then
+        build_app "$archs" && return 0
+        echo "Universal SwiftPM build failed; trying per-architecture lipo fallback." >&2
+    else
+        echo "xcbuild is unavailable; building universal package from per-architecture slices." >&2
+    fi
+
+    build_universal_app_from_slices "$archs"
+}
+
 REQUESTED_ARCHS="$PACKAGE_ARCHS"
 HOST_ARCH="$(uname -m)"
 ACTIVE_ARCHS="$REQUESTED_ARCHS"
@@ -52,12 +103,9 @@ if [[ "$REQUESTED_ARCHS" == "native" || "$REQUESTED_ARCHS" == "$HOST_ARCH" ]]; t
     BUILD_ARCHS=""
 fi
 
-if [[ "$BUILD_ARCHS" == *" "* ]] && ! has_xcbuild; then
-    if [[ "$REQUIRE_UNIVERSAL_PACKAGE" == "1" ]]; then
-        echo "Universal SwiftPM builds require xcbuild from a full Xcode installation." >&2
-        exit 1
-    fi
-
+if [[ "$BUILD_ARCHS" == *" "* ]] && [[ "$REQUIRE_UNIVERSAL_PACKAGE" == "1" ]]; then
+    build_universal_app "$BUILD_ARCHS"
+elif [[ "$BUILD_ARCHS" == *" "* ]] && ! has_xcbuild; then
     ACTIVE_ARCHS="$HOST_ARCH"
     BUILD_ARCHS=""
     echo "xcbuild is unavailable; falling back to native $ACTIVE_ARCHS package." >&2
