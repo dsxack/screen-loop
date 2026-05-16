@@ -15,8 +15,12 @@ public final class SegmentRingBuffer {
     }
 
     public var mediaDuration: TimeInterval {
-        segments.reduce(0) { partialResult, segment in
-            partialResult + segment.duration
+        Self.unionDuration(of: segments)
+    }
+
+    public static func unionDuration(of segments: [RecordedSegment]) -> TimeInterval {
+        mergedIntervals(for: segments).reduce(0) { partialResult, interval in
+            partialResult + interval.end.timeIntervalSince(interval.start)
         }
     }
 
@@ -53,44 +57,44 @@ public final class SegmentRingBuffer {
             return nil
         }
 
-        var selected: [RecordedSegment] = []
-        var remainingDuration = duration
-
-        for segment in segments.reversed() {
-            selected.append(segment)
-
-            if remainingDuration <= segment.duration {
-                let trimFromSegmentStart = max(0, segment.duration - remainingDuration)
-                let startDate = segment.startDate.addingTimeInterval(trimFromSegmentStart)
-                let orderedSelection = Array(selected.reversed())
-
-                return SegmentSelection(
-                    segments: orderedSelection,
-                    requestedStartDate: startDate,
-                    endDate: orderedSelection.last?.endDate ?? segment.endDate
-                )
-            }
-
-            remainingDuration -= segment.duration
-        }
-
-        let orderedSelection = Array(selected.reversed())
-        guard let first = orderedSelection.first, let last = orderedSelection.last else {
+        let intervals = Self.mergedIntervals(for: segments)
+        guard let lastInterval = intervals.last else {
             return nil
         }
+
+        var remainingDuration = duration
+        var requestedStartDate = intervals.first?.start ?? lastInterval.start
+
+        for interval in intervals.reversed() {
+            let intervalDuration = interval.end.timeIntervalSince(interval.start)
+            if remainingDuration <= intervalDuration {
+                requestedStartDate = interval.end.addingTimeInterval(-remainingDuration)
+                break
+            }
+
+            remainingDuration -= intervalDuration
+            requestedStartDate = interval.start
+        }
+
+        let selectedSegments = segments.filter { segment in
+            segment.endDate > requestedStartDate && segment.startDate < lastInterval.end
+        }
+        guard !selectedSegments.isEmpty else {
+            return nil
+        }
+
         return SegmentSelection(
-            segments: orderedSelection,
-            requestedStartDate: first.startDate,
-            endDate: last.endDate
+            segments: selectedSegments,
+            requestedStartDate: requestedStartDate,
+            endDate: lastInterval.end
         )
     }
 
     private func trimExpiredSegments() {
-        var currentMediaDuration = mediaDuration
         var expired: [RecordedSegment] = []
 
-        while let first = segments.first, currentMediaDuration - first.duration >= retention {
-            currentMediaDuration -= first.duration
+        while let first = segments.first,
+              Self.unionDuration(of: Array(segments.dropFirst())) >= retention {
             expired.append(first)
             segments.removeFirst()
         }
@@ -105,4 +109,39 @@ public final class SegmentRingBuffer {
         try? fileManager.removeItem(at: url)
     }
 
+    private static func mergedIntervals(for segments: [RecordedSegment]) -> [SegmentInterval] {
+        let sortedSegments = segments
+            .filter { $0.duration > 0 }
+            .sorted { lhs, rhs in
+                if lhs.startDate == rhs.startDate {
+                    return lhs.url.path < rhs.url.path
+                }
+                return lhs.startDate < rhs.startDate
+            }
+
+        var intervals: [SegmentInterval] = []
+        for segment in sortedSegments {
+            guard let last = intervals.last else {
+                intervals.append(SegmentInterval(start: segment.startDate, end: segment.endDate))
+                continue
+            }
+
+            if segment.startDate <= last.end {
+                intervals[intervals.count - 1] = SegmentInterval(
+                    start: last.start,
+                    end: max(last.end, segment.endDate)
+                )
+            } else {
+                intervals.append(SegmentInterval(start: segment.startDate, end: segment.endDate))
+            }
+        }
+
+        return intervals
+    }
+
+}
+
+private struct SegmentInterval {
+    let start: Date
+    let end: Date
 }

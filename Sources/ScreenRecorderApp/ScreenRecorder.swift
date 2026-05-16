@@ -50,6 +50,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private let exporter: ClipExporter
     private let captureQueue = DispatchQueue(label: "screen-recorder.capture", qos: .userInitiated)
     private let segmentDuration: TimeInterval = 60
+    private let segmentOverlapDuration: TimeInterval = 1
     private let retentionDuration: TimeInterval = 60 * 60
     private let onStateChange: (RecorderState) -> Void
 
@@ -58,6 +59,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private var bufferMode: RecordingMode
     private var allDisplayScopeIDs: Set<CGDirectDisplayID> = []
     private var profile: RecordingProfile = .defaultProfile
+    private var audioMode: AudioRecordingMode
     private var wakeRestartTask: Task<Void, Never>?
     private var pendingSegmentFinishes = 0
     private var pendingFinishError: Error?
@@ -69,6 +71,10 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     var currentProfile: RecordingProfile {
         profile
+    }
+
+    var currentAudioMode: AudioRecordingMode {
+        audioMode
     }
 
     var isCaptureActive: Bool {
@@ -87,12 +93,14 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     init(
         paths: RecordingPaths = RecordingPaths(),
         mode: RecordingMode = .mainDisplay,
+        audioMode: AudioRecordingMode = .off,
         exporter: ClipExporter = ClipExporter(),
         onStateChange: @escaping (RecorderState) -> Void
     ) {
         self.paths = paths
         self.selectedMode = mode
         self.bufferMode = mode == .off ? .mainDisplay : mode
+        self.audioMode = audioMode
         self.exporter = exporter
         self.onStateChange = onStateChange
     }
@@ -163,6 +171,29 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
     }
 
+    func setAudioRecordingMode(_ newMode: AudioRecordingMode) {
+        guard newMode != audioMode else {
+            return
+        }
+
+        let wasRecording = isCaptureActive
+        audioMode = newMode
+
+        guard wasRecording, selectedMode != .off else {
+            publish(steadyState)
+            return
+        }
+
+        Task {
+            do {
+                publish(.starting)
+                try await startCapture(for: selectedMode)
+            } catch {
+                publish(.failed(error.localizedDescription))
+            }
+        }
+    }
+
     func handleSystemWillSleep() {
         Task {
             wakeRestartTask?.cancel()
@@ -196,6 +227,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let duration = TimeInterval(minutes * 60)
         let wasRecording = isCaptureActive
         publish(.exporting)
+        defer {
+            publish(steadyState)
+        }
 
         await finalizeActiveSegments(createReplacement: wasRecording)
         try await waitForPendingFinishes()
@@ -234,7 +268,6 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             savedRecording = .displaySet(folderURL: outputDirectory, duration: duration, entries: entries)
         }
 
-        publish(steadyState)
         return savedRecording
     }
 
@@ -253,6 +286,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
 
         let activeProfile = profile
+        let activeAudioMode = audioMode
         let content = try await SCShareableContent.current
         let displays = selectedDisplays(for: mode, from: content.displays)
         guard !displays.isEmpty else {
@@ -274,9 +308,17 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
                     maxLongEdge: activeProfile.maxLongEdge
                 )
                 let filter = SCContentFilter(display: display, excludingWindows: [])
-                let configuration = makeStreamConfiguration(geometry: geometry, profile: activeProfile)
+                let capturesAudio = activeAudioMode.capturesSystemAudio && offset == 0
+                let configuration = makeStreamConfiguration(
+                    geometry: geometry,
+                    profile: activeProfile,
+                    capturesAudio: capturesAudio
+                )
                 let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
+                if capturesAudio {
+                    try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: captureQueue)
+                }
 
                 try await recoverSessionIfNeeded(session, includeLegacyRoot: isMain)
                 try await configureSessionForCapture(session, stream: stream, geometry: geometry)
@@ -468,11 +510,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
                 do {
                     session.geometry = geometry
                     session.stream = stream
-                    session.activeWriter = try self.makeWriterLocked(for: session)
+                    session.activeWriters = [try self.makeActiveWriterLocked(for: session)]
                     continuation.resume()
                 } catch {
                     session.stream = nil
-                    session.activeWriter = nil
+                    session.activeWriters.removeAll()
                     continuation.resume(throwing: error)
                 }
             }
@@ -556,7 +598,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         scheduleRestartAfterWake(delayNanoseconds: 1_000_000_000)
     }
 
-    private func makeStreamConfiguration(geometry: VideoGeometry, profile: RecordingProfile) -> SCStreamConfiguration {
+    private func makeStreamConfiguration(
+        geometry: VideoGeometry,
+        profile: RecordingProfile,
+        capturesAudio: Bool
+    ) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         configuration.width = geometry.width
         configuration.height = geometry.height
@@ -566,7 +612,12 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         configuration.preservesAspectRatio = true
         configuration.showsCursor = true
         configuration.queueDepth = 5
-        configuration.capturesAudio = false
+        configuration.capturesAudio = capturesAudio
+        if capturesAudio {
+            configuration.sampleRate = 48_000
+            configuration.channelCount = 2
+            configuration.excludesCurrentProcessAudio = true
+        }
         return configuration
     }
 
@@ -584,30 +635,78 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             url: paths.makeSegmentURL(displayID: session.displayID),
             geometry: geometry,
             frameRate: profile.frameRate,
-            bitRate: profile.bitRate(for: geometry)
+            bitRate: profile.bitRate(for: geometry),
+            capturesAudio: audioMode.capturesSystemAudio
         )
     }
 
+    private func makeActiveWriterLocked(for session: DisplayCaptureSession) throws -> ActiveSegmentWriter {
+        ActiveSegmentWriter(writer: try makeWriterLocked(for: session))
+    }
+
     private func handle(sampleBuffer: CMSampleBuffer, from stream: SCStream, of type: SCStreamOutputType) {
-        guard type == .screen, isCompleteFrame(sampleBuffer),
+        switch type {
+        case .screen:
+            handleScreenSampleBuffer(sampleBuffer, from: stream)
+        case .audio:
+            handleAudioSampleBuffer(sampleBuffer)
+        case .microphone:
+            return
+        @unknown default:
+            return
+        }
+    }
+
+    private func handleScreenSampleBuffer(_ sampleBuffer: CMSampleBuffer, from stream: SCStream) {
+        guard isCompleteFrame(sampleBuffer),
               let session = sessions.values.first(where: { $0.stream === stream }) else {
             return
         }
 
         do {
-            if session.activeWriter == nil {
-                session.activeWriter = try makeWriterLocked(for: session)
+            if session.activeWriters.isEmpty {
+                session.activeWriters = [try makeActiveWriterLocked(for: session)]
             }
 
-            guard let writer = session.activeWriter else {
-                return
+            let receivedAt = Date()
+            for activeWriter in session.activeWriters {
+                try activeWriter.appendVideo(sampleBuffer, receivedAt: receivedAt)
             }
 
-            try writer.append(sampleBuffer, receivedAt: Date())
+            if session.activeWriters.count == 1,
+               let activeWriter = session.activeWriters.first,
+               activeWriter.writer.elapsedAtLastFrame >= segmentDuration {
+                let nextWriter = try makeActiveWriterLocked(for: session)
+                let alignedReceivedAt = activeWriter.mediaDate(for: sampleBuffer) ?? receivedAt
+                try nextWriter.appendVideo(sampleBuffer, receivedAt: alignedReceivedAt)
+                session.activeWriters.append(nextWriter)
+            }
 
-            if writer.elapsedAtLastFrame >= segmentDuration {
-                session.activeWriter = try makeWriterLocked(for: session)
-                finishWriterLocked(writer, displayID: session.displayID)
+            let finishedWriters = session.activeWriters.dropLast().filter {
+                $0.writer.elapsedAtLastFrame >= segmentDuration + segmentOverlapDuration
+            }
+            if !finishedWriters.isEmpty {
+                let finishedURLs = Set(finishedWriters.map(\.writer.url))
+                session.activeWriters.removeAll { finishedURLs.contains($0.writer.url) }
+                for activeWriter in finishedWriters {
+                    finishWriterLocked(activeWriter.writer, displayID: session.displayID)
+                }
+            }
+        } catch {
+            publish(.failed(error.localizedDescription))
+        }
+    }
+
+    private func handleAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        guard audioMode.capturesSystemAudio else {
+            return
+        }
+
+        do {
+            for session in sessions.values {
+                for activeWriter in session.activeWriters {
+                    try activeWriter.writer.appendAudio(sampleBuffer)
+                }
             }
         } catch {
             publish(.failed(error.localizedDescription))
@@ -628,11 +727,19 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private func finalizeActiveSegments(createReplacement: Bool) async {
         await withCheckedContinuation { continuation in
             captureQueue.async {
-                let targets = self.sessions.values.compactMap { session -> (DisplayCaptureSession, SegmentFileWriter)? in
-                    guard let writer = session.activeWriter else {
-                        return nil
+                var targets: [(CGDirectDisplayID, SegmentFileWriter)] = []
+                for session in self.sessions.values where !session.activeWriters.isEmpty {
+                    targets += session.activeWriters.map { (session.displayID, $0.writer) }
+
+                    do {
+                        session.activeWriters = createReplacement && session.stream != nil
+                            ? [try self.makeActiveWriterLocked(for: session)]
+                            : []
+                    } catch {
+                        session.activeWriters.removeAll()
+                        self.pendingFinishError = error
+                        self.publish(.failed(error.localizedDescription))
                     }
-                    return (session, writer)
                 }
 
                 guard !targets.isEmpty else {
@@ -641,18 +748,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
                 }
 
                 var remaining = targets.count
-                for (session, writer) in targets {
-                    do {
-                        session.activeWriter = createReplacement && session.stream != nil
-                            ? try self.makeWriterLocked(for: session)
-                            : nil
-                    } catch {
-                        session.activeWriter = nil
-                        self.pendingFinishError = error
-                        self.publish(.failed(error.localizedDescription))
-                    }
-
-                    self.finishWriterLocked(writer, displayID: session.displayID) {
+                for (displayID, writer) in targets {
+                    self.finishWriterLocked(writer, displayID: displayID) {
                         remaining -= 1
                         if remaining == 0 {
                             continuation.resume()
@@ -860,7 +957,7 @@ private final class DisplayCaptureSession: @unchecked Sendable {
     var isMain: Bool
     var geometry: VideoGeometry?
     var stream: SCStream?
-    var activeWriter: SegmentFileWriter?
+    var activeWriters: [ActiveSegmentWriter] = []
     var hasRecoveredSegments = false
 
     init(
@@ -882,7 +979,61 @@ private final class DisplayCaptureSession: @unchecked Sendable {
     }
 
     var mediaDuration: TimeInterval {
-        ringBuffer.mediaDuration + (activeWriter?.elapsedAtLastFrame ?? 0)
+        let activeSegments = activeWriters.compactMap(\.estimatedSegment)
+        return SegmentRingBuffer.unionDuration(of: ringBuffer.allSegments + activeSegments)
+    }
+}
+
+private final class ActiveSegmentWriter {
+    let writer: SegmentFileWriter
+    private var firstSampleDate: Date?
+    private var firstPresentationTime: CMTime?
+
+    init(writer: SegmentFileWriter) {
+        self.writer = writer
+    }
+
+    func appendVideo(_ sampleBuffer: CMSampleBuffer, receivedAt date: Date) throws {
+        if firstSampleDate == nil {
+            firstSampleDate = date
+        }
+        if firstPresentationTime == nil {
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            if presentationTime.isValid {
+                firstPresentationTime = presentationTime
+            }
+        }
+        try writer.append(sampleBuffer, receivedAt: date)
+    }
+
+    func mediaDate(for sampleBuffer: CMSampleBuffer) -> Date? {
+        guard let firstSampleDate, let firstPresentationTime else {
+            return nil
+        }
+
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard presentationTime.isValid else {
+            return nil
+        }
+
+        return firstSampleDate.addingTimeInterval(CMTimeGetSeconds(presentationTime - firstPresentationTime))
+    }
+
+    var estimatedSegment: RecordedSegment? {
+        guard let firstSampleDate else {
+            return nil
+        }
+
+        let duration = writer.elapsedAtLastFrame
+        guard duration > 0 else {
+            return nil
+        }
+
+        return RecordedSegment(
+            url: writer.url,
+            startDate: firstSampleDate,
+            endDate: firstSampleDate.addingTimeInterval(duration)
+        )
     }
 }
 

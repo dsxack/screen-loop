@@ -28,17 +28,14 @@ public struct SegmentSelection: Equatable, Sendable {
     }
 
     public var requestedDuration: TimeInterval {
-        guard let first = segments.first else {
-            return 0
-        }
-
-        let firstSegmentTrim = max(0, requestedStartDate.timeIntervalSince(first.startDate))
-        return segments.enumerated().reduce(0) { partialResult, item in
-            let (index, segment) = item
-            if index == 0 {
-                return partialResult + max(0, segment.duration - firstSegmentTrim)
+        let clippedSegments = segments.compactMap { segment -> RecordedSegment? in
+            let startDate = max(segment.startDate, requestedStartDate)
+            let endDate = min(segment.endDate, self.endDate)
+            guard endDate > startDate else {
+                return nil
             }
-            return partialResult + segment.duration
+            return RecordedSegment(url: segment.url, startDate: startDate, endDate: endDate)
         }
+        return SegmentRingBuffer.unionDuration(of: clippedSegments)
     }
 }

@@ -33,11 +33,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private var permissionMenuItem: NSMenuItem!
     private var relaunchMenuItem: NSMenuItem!
     private var recordingRootMenuItem: NSMenuItem!
+    private var audioRootMenuItem: NSMenuItem!
     private var recordingAdvancedSeparatorItem: NSMenuItem!
     private var profileRootMenuItem: NSMenuItem!
     private var launchAtLoginMenuItem: NSMenuItem!
     private var openLoginItemsSettingsMenuItem: NSMenuItem!
     private var recordingModeMenuItems: [NSMenuItem] = []
+    private var audioModeMenuItems: [NSMenuItem] = []
     private var profileMenuItems: [NSMenuItem] = []
     private var saveMenuItems: [NSMenuItem] = []
     private var saveAndTrimMenuItems: [NSMenuItem] = []
@@ -54,12 +56,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
     private var isAdvancedMenuVisible = false
     private var menuModifierMonitor: Any?
     private var recordingMode = RecordingMode.load()
+    private var audioMode = AudioRecordingMode.load()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupMenu()
 
-        recorder = ScreenRecorder(paths: paths, mode: recordingMode) { [weak self] state in
+        recorder = ScreenRecorder(paths: paths, mode: recordingMode, audioMode: audioMode) { [weak self] state in
             self?.setState(state)
         }
 
@@ -131,6 +134,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         recordingRootMenuItem = NSMenuItem(title: "Recording", action: nil, keyEquivalent: "")
         recordingRootMenuItem.submenu = recordingMenu
         menu.addItem(recordingRootMenuItem)
+
+        let audioMenu = NSMenu()
+        for mode in AudioRecordingMode.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(audioModeMenuItemClicked(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            audioModeMenuItems.append(item)
+            audioMenu.addItem(item)
+        }
+
+        audioRootMenuItem = NSMenuItem(title: "Audio", action: nil, keyEquivalent: "")
+        audioRootMenuItem.submenu = audioMenu
+        menu.addItem(audioRootMenuItem)
 
         recordingAdvancedSeparatorItem = .separator()
         menu.addItem(recordingAdvancedSeparatorItem)
@@ -278,6 +298,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         }
         recordingRootMenuItem?.title = "Recording: \(recordingMode.title)"
         recordingRootMenuItem?.isEnabled = currentState.canToggleRecording
+        audioMode = recorder?.currentAudioMode ?? audioMode
+        audioModeMenuItems.forEach { item in
+            let rawValue = item.representedObject as? String
+            item.state = rawValue == audioMode.rawValue ? .on : .off
+            item.isEnabled = currentState != .starting && currentState != .exporting
+        }
+        audioRootMenuItem?.title = "Audio: \(audioMode.title)"
+        audioRootMenuItem?.isEnabled = currentState != .starting && currentState != .exporting
         launchAtLoginMenuItem?.title = LaunchAtLoginController.statusTitle
         launchAtLoginMenuItem?.state = .off
         profileRootMenuItem?.title = "Profile: \(recorder?.currentProfile.title ?? RecordingProfile.defaultProfile.title)"
@@ -571,6 +599,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, @unche
         recordingMode = mode
         mode.save()
         recorder.setRecordingMode(mode)
+        updateMenu()
+    }
+
+    @objc private func audioModeMenuItemClicked(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = AudioRecordingMode(rawValue: rawValue) else {
+            return
+        }
+
+        audioMode = mode
+        mode.save()
+        recorder.setAudioRecordingMode(mode)
         updateMenu()
     }
 

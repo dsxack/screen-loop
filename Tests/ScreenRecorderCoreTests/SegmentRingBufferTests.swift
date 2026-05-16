@@ -1,3 +1,4 @@
+import AudioToolbox
 @preconcurrency import AVFoundation
 import CoreVideo
 import ScreenRecorderCore
@@ -81,15 +82,39 @@ struct SegmentRingBufferTests {
     }
 
     @Test
-    func testMediaDurationSumsRetainedSegments() throws {
+    func testMediaDurationUsesUnionOfRetainedSegments() throws {
         let directory = try makeTemporaryDirectory()
         let buffer = SegmentRingBuffer(retention: 60)
         let base = Date(timeIntervalSince1970: 350)
 
         buffer.add(makeSegment(in: directory, name: "0.mov", start: base, end: base.addingTimeInterval(10)))
-        buffer.add(makeSegment(in: directory, name: "1.mov", start: base.addingTimeInterval(10), end: base.addingTimeInterval(25)))
+        buffer.add(makeSegment(in: directory, name: "1.mov", start: base.addingTimeInterval(9), end: base.addingTimeInterval(25)))
 
         #expect(buffer.mediaDuration == 25)
+    }
+
+    @Test
+    func testSelectionUsesUnionDurationAcrossOverlaps() throws {
+        let directory = try makeTemporaryDirectory()
+        let buffer = SegmentRingBuffer(retention: 1800)
+        let base = Date(timeIntervalSince1970: 375)
+
+        let segments = [
+            makeSegment(in: directory, name: "0.mov", start: base, end: base.addingTimeInterval(61)),
+            makeSegment(in: directory, name: "1.mov", start: base.addingTimeInterval(60), end: base.addingTimeInterval(121))
+        ]
+        segments.forEach(buffer.add)
+
+        let longSelection = try #require(buffer.selection(forLast: 120))
+        #expect(buffer.mediaDuration == 121)
+        #expect(longSelection.segments == segments)
+        #expect(longSelection.requestedStartDate == base.addingTimeInterval(1))
+        #expect(longSelection.requestedDuration == 120)
+
+        let shortSelection = try #require(buffer.selection(forLast: 60))
+        #expect(shortSelection.segments.map(\.url.lastPathComponent) == ["1.mov"])
+        #expect(shortSelection.requestedStartDate == base.addingTimeInterval(61))
+        #expect(shortSelection.requestedDuration == 60)
     }
 
     @Test
@@ -118,6 +143,115 @@ struct SegmentRingBufferTests {
         #expect(RecordingProfile.readableText.bitRate(for: readableGeometry) == 5_000_000)
         #expect(RecordingProfile.highQuality.bitRate(for: highGeometry) == 8_000_000)
         #expect(RecordingProfile.lowPower.bitRate(for: lowGeometry) == 2_000_000)
+    }
+
+    @Test
+    func testAudioRecordingModeDefaultsAndPersists() {
+        let suiteName = "ScreenLoopAudioModeTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(AudioRecordingMode.load(from: defaults) == .off)
+
+        AudioRecordingMode.systemAudio.save(to: defaults)
+        #expect(AudioRecordingMode.load(from: defaults) == .systemAudio)
+
+        AudioRecordingMode.off.save(to: defaults)
+        #expect(AudioRecordingMode.load(from: defaults) == .off)
+    }
+
+    @Test
+    func testSegmentFileWriterWritesAudioTrack() async throws {
+        let directory = try makeTemporaryDirectory()
+        let outputURL = directory.appendingPathComponent("segment.mov")
+        let geometry = VideoGeometry(width: 160, height: 90)
+        let writer = try SegmentFileWriter(
+            url: outputURL,
+            geometry: geometry,
+            frameRate: 10,
+            bitRate: 1_200_000,
+            capturesAudio: true
+        )
+        let base = Date(timeIntervalSince1970: 700)
+
+        for frame in 0...10 {
+            let presentationTime = CMTime(value: CMTimeValue(frame), timescale: 10)
+            let videoBuffer = try makeVideoSampleBuffer(
+                width: geometry.width,
+                height: geometry.height,
+                presentationTime: presentationTime,
+                frameIndex: frame
+            )
+            try writer.append(videoBuffer, receivedAt: base.addingTimeInterval(Double(frame) / 10.0))
+
+            if frame < 10 {
+                let audioBuffer = try makeAudioSampleBuffer(
+                    presentationTime: presentationTime,
+                    duration: CMTime(value: 1, timescale: 10)
+                )
+                try writer.appendAudio(audioBuffer)
+            }
+        }
+
+        let segment = try await finishWriter(writer)
+        let asset = AVURLAsset(url: try #require(segment?.url))
+
+        #expect(!(try await asset.loadTracks(withMediaType: .video)).isEmpty)
+        #expect(!(try await asset.loadTracks(withMediaType: .audio)).isEmpty)
+    }
+
+    @Test
+    func testSegmentFileWriterKeepsAudioThroughSegmentTail() async throws {
+        let directory = try makeTemporaryDirectory()
+        let outputURL = directory.appendingPathComponent("segment.mov")
+        let exportURL = directory.appendingPathComponent("export.mov")
+        let geometry = VideoGeometry(width: 160, height: 90)
+        let writer = try SegmentFileWriter(
+            url: outputURL,
+            geometry: geometry,
+            frameRate: 10,
+            bitRate: 1_200_000,
+            capturesAudio: true
+        )
+        let base = Date(timeIntervalSince1970: 725)
+
+        for frame in 0..<10 {
+            let presentationTime = CMTime(value: CMTimeValue(frame), timescale: 10)
+            let videoBuffer = try makeVideoSampleBuffer(
+                width: geometry.width,
+                height: geometry.height,
+                presentationTime: presentationTime,
+                frameIndex: frame
+            )
+            try writer.append(videoBuffer, receivedAt: base.addingTimeInterval(Double(frame) / 10.0))
+
+            let audioBuffer = try makeAudioSampleBuffer(
+                presentationTime: presentationTime,
+                duration: CMTime(value: 1, timescale: 10)
+            )
+            try writer.appendAudio(audioBuffer)
+        }
+
+        let tailAudioBuffer = try makeAudioSampleBuffer(
+            presentationTime: CMTime(value: 10, timescale: 10),
+            duration: CMTime(value: 1, timescale: 10)
+        )
+        try writer.appendAudio(tailAudioBuffer)
+
+        let segment = try #require(try await finishWriter(writer))
+        let asset = AVURLAsset(url: segment.url)
+        let assetDuration = try await asset.load(.duration).seconds
+        let selection = SegmentSelection(
+            segments: [segment],
+            requestedStartDate: segment.startDate,
+            endDate: segment.endDate
+        )
+        let exportedURL = try await ClipExporter().export(selection: selection, to: exportURL)
+        let exportedDuration = try await AVURLAsset(url: exportedURL).load(.duration).seconds
+
+        #expect(abs(segment.duration - 1.1) < 0.05)
+        #expect(abs(assetDuration - 1.1) < 0.15)
+        #expect(abs(exportedDuration - 1.1) < 0.25)
     }
 
     @Test
@@ -255,6 +389,124 @@ struct SegmentRingBufferTests {
     }
 
     @Test
+    func testExporterPreservesAudioTrack() async throws {
+        let directory = try makeTemporaryDirectory()
+        let firstURL = directory.appendingPathComponent("first.mov")
+        let secondURL = directory.appendingPathComponent("second.mov")
+        let outputURL = directory.appendingPathComponent("output.mov")
+
+        try await makeTestVideo(url: firstURL, duration: 1.0, includeAudio: true)
+        try await makeTestVideo(url: secondURL, duration: 1.0, includeAudio: true)
+
+        let base = Date(timeIntervalSince1970: 450)
+        let selection = SegmentSelection(
+            segments: [
+                RecordedSegment(url: firstURL, startDate: base, endDate: base.addingTimeInterval(1)),
+                RecordedSegment(url: secondURL, startDate: base.addingTimeInterval(1), endDate: base.addingTimeInterval(2))
+            ],
+            requestedStartDate: base,
+            endDate: base.addingTimeInterval(2)
+        )
+
+        let exportedURL = try await ClipExporter().export(selection: selection, to: outputURL)
+        let asset = AVURLAsset(url: exportedURL)
+        let exportedDuration = try await asset.load(.duration)
+
+        #expect(!(try await asset.loadTracks(withMediaType: .audio)).isEmpty)
+        #expect(abs(exportedDuration.seconds - 2.0) < 0.35)
+    }
+
+    @Test
+    func testExporterCutsInsideSegmentOverlap() async throws {
+        let directory = try makeTemporaryDirectory()
+        let firstURL = directory.appendingPathComponent("first.mov")
+        let secondURL = directory.appendingPathComponent("second.mov")
+        let outputURL = directory.appendingPathComponent("output.mov")
+
+        try await makeTestVideo(url: firstURL, duration: 1.2)
+        try await makeTestVideo(url: secondURL, duration: 1.2)
+
+        let base = Date(timeIntervalSince1970: 475)
+        let selection = SegmentSelection(
+            segments: [
+                RecordedSegment(url: firstURL, startDate: base, endDate: base.addingTimeInterval(1.2)),
+                RecordedSegment(url: secondURL, startDate: base.addingTimeInterval(1.0), endDate: base.addingTimeInterval(2.2))
+            ],
+            requestedStartDate: base,
+            endDate: base.addingTimeInterval(2.2)
+        )
+
+        let exportedURL = try await ClipExporter().export(selection: selection, to: outputURL)
+        let asset = AVURLAsset(url: exportedURL)
+        let exportedDuration = try await asset.load(.duration).seconds
+
+        #expect(selection.requestedDuration == 2.2)
+        #expect(abs(exportedDuration - 2.2) < 0.35)
+    }
+
+    @Test
+    func testExporterKeepsAudioContinuousAcrossOverlap() async throws {
+        let directory = try makeTemporaryDirectory()
+        let firstURL = directory.appendingPathComponent("first.mov")
+        let secondURL = directory.appendingPathComponent("second.mov")
+        let outputURL = directory.appendingPathComponent("output.mov")
+
+        try await makeTestVideo(url: firstURL, duration: 1.2, includeAudio: true)
+        try await makeTestVideo(url: secondURL, duration: 1.2, includeAudio: true)
+
+        let base = Date(timeIntervalSince1970: 485)
+        let selection = SegmentSelection(
+            segments: [
+                RecordedSegment(url: firstURL, startDate: base, endDate: base.addingTimeInterval(1.2)),
+                RecordedSegment(url: secondURL, startDate: base.addingTimeInterval(1.0), endDate: base.addingTimeInterval(2.2))
+            ],
+            requestedStartDate: base,
+            endDate: base.addingTimeInterval(2.2)
+        )
+
+        let exportedURL = try await ClipExporter().export(selection: selection, to: outputURL)
+        let asset = AVURLAsset(url: exportedURL)
+        let audioTrack = try #require(try await asset.loadTracks(withMediaType: .audio).first)
+        let audioRange = try await audioTrack.load(.timeRange)
+        let audioTimes = try await readSamplePresentationTimes(url: exportedURL, mediaType: .audio)
+
+        #expect(abs(audioRange.duration.seconds - 2.2) < 0.35)
+        #expect(maxPresentationGap(audioTimes) < 0.12)
+    }
+
+    @Test
+    func testExporterTrimKeepsAudioAndVideoDurationAligned() async throws {
+        let directory = try makeTemporaryDirectory()
+        let firstURL = directory.appendingPathComponent("first.mov")
+        let secondURL = directory.appendingPathComponent("second.mov")
+        let outputURL = directory.appendingPathComponent("output.mov")
+
+        try await makeTestVideo(url: firstURL, duration: 1.0, includeAudio: true)
+        try await makeTestVideo(url: secondURL, duration: 1.0, includeAudio: true)
+
+        let base = Date(timeIntervalSince1970: 490)
+        let selection = SegmentSelection(
+            segments: [
+                RecordedSegment(url: firstURL, startDate: base, endDate: base.addingTimeInterval(1)),
+                RecordedSegment(url: secondURL, startDate: base.addingTimeInterval(1), endDate: base.addingTimeInterval(2))
+            ],
+            requestedStartDate: base.addingTimeInterval(0.4),
+            endDate: base.addingTimeInterval(2)
+        )
+
+        let exportedURL = try await ClipExporter().export(selection: selection, to: outputURL)
+        let asset = AVURLAsset(url: exportedURL)
+        let exportedDuration = try await asset.load(.duration).seconds
+        let videoTrack = try #require(try await asset.loadTracks(withMediaType: .video).first)
+        let audioTrack = try #require(try await asset.loadTracks(withMediaType: .audio).first)
+        let videoDuration = try await videoTrack.load(.timeRange).duration.seconds
+        let audioDuration = try await audioTrack.load(.timeRange).duration.seconds
+
+        #expect(abs(exportedDuration - 1.6) < 0.2)
+        #expect(abs(videoDuration - audioDuration) < 0.15)
+    }
+
+    @Test
     func testExporterCapsOutputToSelectionRequestedDuration() async throws {
         let directory = try makeTemporaryDirectory()
         let firstURL = directory.appendingPathComponent("first.mov")
@@ -364,7 +616,14 @@ struct SegmentRingBufferTests {
         return url
     }
 
-    private func makeTestVideo(url: URL, duration: Double, frameRate: Int = 10) async throws {
+    private func makeTestVideo(
+        url: URL,
+        duration: Double,
+        frameRate: Int = 10,
+        includeAudio: Bool = false,
+        audioDuration: Double? = nil,
+        frameTimes: [Double]? = nil
+    ) async throws {
         let width = 160
         let height = 90
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
@@ -390,13 +649,33 @@ struct SegmentRingBufferTests {
             throw TestVideoError("Writer cannot add video input.")
         }
         writer.add(input)
+
+        let audioInput: AVAssetWriterInput?
+        if includeAudio {
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48_000,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 128_000
+            ])
+            guard writer.canAdd(input) else {
+                throw TestVideoError("Writer cannot add audio input.")
+            }
+            writer.add(input)
+            audioInput = input
+        } else {
+            audioInput = nil
+        }
+
         guard writer.startWriting() else {
             throw writer.error ?? TestVideoError("Writer could not start.")
         }
         writer.startSession(atSourceTime: .zero)
 
-        let frameCount = Int(duration * Double(frameRate))
-        for frame in 0..<frameCount {
+        let presentationTimes = frameTimes ?? (0..<Int(duration * Double(frameRate))).map {
+            Double($0) / Double(frameRate)
+        }
+        for (frame, presentationSeconds) in presentationTimes.enumerated() {
             guard input.isReadyForMoreMediaData else {
                 try await Task.sleep(nanoseconds: 10_000_000)
                 continue
@@ -418,14 +697,34 @@ struct SegmentRingBufferTests {
             }
             CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
 
-            let presentationTime = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(frameRate))
+            let presentationTime = CMTime(seconds: presentationSeconds, preferredTimescale: CMTimeScale(frameRate * 600))
             guard adaptor.append(pixelBuffer, withPresentationTime: presentationTime) else {
                 throw writer.error ?? TestVideoError("Could not append a pixel buffer.")
             }
         }
 
+        if let audioInput {
+            let audioFrameCount = Int((audioDuration ?? duration) * Double(frameRate))
+            for frame in 0..<audioFrameCount {
+                guard audioInput.isReadyForMoreMediaData else {
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                    continue
+                }
+
+                let presentationTime = CMTime(value: CMTimeValue(frame), timescale: CMTimeScale(frameRate))
+                let audioBuffer = try makeAudioSampleBuffer(
+                    presentationTime: presentationTime,
+                    duration: CMTime(value: 1, timescale: CMTimeScale(frameRate))
+                )
+                guard audioInput.append(audioBuffer) else {
+                    throw writer.error ?? TestVideoError("Could not append audio.")
+                }
+            }
+        }
+
         writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: CMTimeScale(frameRate)))
         input.markAsFinished()
+        audioInput?.markAsFinished()
         let writerBox = AssetWriterBox(writer)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             writer.finishWriting {
@@ -434,6 +733,202 @@ struct SegmentRingBufferTests {
                 } else {
                     continuation.resume()
                 }
+            }
+        }
+    }
+
+    private func makeVideoSampleBuffer(
+        width: Int,
+        height: Int,
+        presentationTime: CMTime,
+        frameIndex: Int
+    ) throws -> CMSampleBuffer {
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferCreate(
+            nil,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            nil,
+            &pixelBuffer
+        )
+        guard let pixelBuffer else {
+            throw TestVideoError("Could not create a pixel buffer.")
+        }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        if let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) {
+            memset(baseAddress, frameIndex % 2 == 0 ? 0x22 : 0x44, CVPixelBufferGetDataSize(pixelBuffer))
+        }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+        var formatDescription: CMVideoFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: nil,
+            imageBuffer: pixelBuffer,
+            formatDescriptionOut: &formatDescription
+        )
+        guard let formatDescription else {
+            throw TestVideoError("Could not create video format description.")
+        }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 10),
+            presentationTimeStamp: presentationTime,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: nil,
+            imageBuffer: pixelBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard let sampleBuffer else {
+            throw TestVideoError("Could not create video sample buffer.")
+        }
+        return sampleBuffer
+    }
+
+    private func makeAudioSampleBuffer(
+        presentationTime: CMTime,
+        duration: CMTime,
+        sampleRate: Double = 48_000,
+        channelCount: Int = 2
+    ) throws -> CMSampleBuffer {
+        let frameCount = max(1, Int(CMTimeGetSeconds(duration) * sampleRate))
+        let bytesPerSample = MemoryLayout<Int16>.size
+        let bytesPerFrame = channelCount * bytesPerSample
+        let byteCount = frameCount * bytesPerFrame
+
+        var blockBuffer: CMBlockBuffer?
+        CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: byteCount,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: byteCount,
+            flags: 0,
+            blockBufferOut: &blockBuffer
+        )
+        guard let blockBuffer else {
+            throw TestVideoError("Could not create audio block buffer.")
+        }
+
+        let samples = [Int16](repeating: 0, count: frameCount * channelCount)
+        let replaceStatus = samples.withUnsafeBytes { bytes in
+            CMBlockBufferReplaceDataBytes(
+                with: bytes.baseAddress!,
+                blockBuffer: blockBuffer,
+                offsetIntoDestination: 0,
+                dataLength: byteCount
+            )
+        }
+        guard replaceStatus == noErr else {
+            throw TestVideoError("Could not fill audio block buffer.")
+        }
+
+        var description = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: UInt32(bytesPerFrame),
+            mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(bytesPerFrame),
+            mChannelsPerFrame: UInt32(channelCount),
+            mBitsPerChannel: UInt32(bytesPerSample * 8),
+            mReserved: 0
+        )
+
+        var formatDescription: CMAudioFormatDescription?
+        CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &description,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
+        )
+        guard let formatDescription else {
+            throw TestVideoError("Could not create audio format description.")
+        }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: CMTimeScale(Int32(sampleRate))),
+            presentationTimeStamp: presentationTime,
+            decodeTimeStamp: .invalid
+        )
+        var sampleSize = bytesPerFrame
+        var sampleBuffer: CMSampleBuffer?
+        CMSampleBufferCreateReady(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuffer,
+            formatDescription: formatDescription,
+            sampleCount: frameCount,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 1,
+            sampleSizeArray: &sampleSize,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard let sampleBuffer else {
+            throw TestVideoError("Could not create audio sample buffer.")
+        }
+        return sampleBuffer
+    }
+
+    private func readSamplePresentationTimes(url: URL, mediaType: AVMediaType) async throws -> [Double] {
+        let asset = AVURLAsset(url: url)
+        let track = try #require(try await asset.loadTracks(withMediaType: mediaType).first)
+        let reader = try AVAssetReader(asset: asset)
+        let outputSettings: [String: Any]? = mediaType == .video
+            ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            : nil
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
+
+        guard reader.canAdd(output) else {
+            throw TestVideoError("Could not add reader output.")
+        }
+        reader.add(output)
+
+        guard reader.startReading() else {
+            throw reader.error ?? TestVideoError("Could not start reader.")
+        }
+
+        var times: [Double] = []
+        while let sampleBuffer = output.copyNextSampleBuffer() {
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+            if presentationTime.isFinite {
+                times.append(presentationTime)
+            }
+        }
+
+        if reader.status == .failed {
+            throw reader.error ?? TestVideoError("Reader failed.")
+        }
+
+        return times.sorted()
+    }
+
+    private func maxPresentationGap(_ presentationTimes: [Double]) -> Double {
+        guard presentationTimes.count > 1 else {
+            return 0
+        }
+
+        return zip(presentationTimes, presentationTimes.dropFirst())
+            .map { next, previous in previous - next }
+            .max() ?? 0
+    }
+
+    private func finishWriter(_ writer: SegmentFileWriter) async throws -> RecordedSegment? {
+        try await withCheckedThrowingContinuation { continuation in
+            writer.finish { result in
+                continuation.resume(with: result)
             }
         }
     }
